@@ -19,9 +19,17 @@ class SovietMemberOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+class ChatPreview(BaseModel):
+    content: str
+    sender_name: str | None
+    sender_id: uuid.UUID | None
+    created_at: datetime
+
+
 class SovietOut(SovietBase):
     id: uuid.UUID
     created_at: datetime
     members: list[SovietMemberOut] = []
+    last_message: ChatPreview | None = None
 
     model_config = ConfigDict(from_attributes=True)
