@@ -1,13 +1,13 @@
 import hashlib
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func, true
+from sqlalchemy import select, func, true, or_, tuple_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietType, ComradeRole
+from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietReadCursor, SovietType, ComradeRole
 from app.schemas.soviet import ChatPreview, SovietCreate, SovietOut
 
 router = APIRouter()
@@ -81,10 +81,31 @@ async def list_my_soviets(
         .correlate(Soviet)
         .lateral("latest_dispatch")
     )
+    unread_count = (
+        select(func.count())
+        .select_from(Dispatch)
+        .where(
+            Dispatch.soviet_id == Soviet.id,
+            Dispatch.is_purged.is_(False),
+            Dispatch.sender_id.is_distinct_from(current_comrade.id),
+            Dispatch.created_at >= SovietMember.joined_at,
+            or_(
+                SovietReadCursor.message_id.is_(None),
+                tuple_(Dispatch.created_at, Dispatch.id) >
+                tuple_(SovietReadCursor.message_created_at, SovietReadCursor.message_id),
+            ),
+        )
+        .correlate(Soviet, SovietMember, SovietReadCursor)
+        .scalar_subquery()
+    )
     stmt = (
-        select(Soviet, latest.c.content, latest.c.sender_id, latest.c.sender_name, latest.c.created_at)
+        select(
+            Soviet, latest.c.content, latest.c.sender_id, latest.c.sender_name,
+            latest.c.created_at, unread_count,
+        )
         .join(Soviet.members)
         .outerjoin(latest, true())
+        .outerjoin(SovietReadCursor, SovietReadCursor.membership_id == SovietMember.id)
         .where(SovietMember.comrade_id == current_comrade.id)
         .options(selectinload(Soviet.members).selectinload(SovietMember.comrade))
         .order_by(func.coalesce(latest.c.created_at, Soviet.created_at).desc(), Soviet.id)
@@ -94,9 +115,10 @@ async def list_my_soviets(
         SovietOut.model_validate(soviet).model_copy(update={
             "last_message": ChatPreview(
                 content=content, sender_name=sender_name, sender_id=sender_id, created_at=created_at
-            ) if created_at is not None else None
+            ) if created_at is not None else None,
+            "unread_count": unread,
         })
-        for soviet, content, sender_id, sender_name, created_at in result.unique().all()
+        for soviet, content, sender_id, sender_name, created_at, unread in result.unique().all()
     ]
 
 @router.post("/{soviet_id}/join", response_model=SovietOut)
