@@ -21,6 +21,15 @@ async def create_soviet(
     """Crea un Soviet (grupo o canal) y asigna al creador como Secretario General."""
     if soviet_in.soviet_type == SovietType.DIRECT:
         raise HTTPException(400, "Use the direct chat endpoint")
+    member_ids = set(soviet_in.member_ids) - {current_comrade.id}
+    if len(member_ids) > 50:
+        raise HTTPException(422, "At most 50 members can be added at creation")
+    if member_ids:
+        active_ids = set((await db.scalars(
+            select(Comrade.id).where(Comrade.id.in_(member_ids), Comrade.is_active.is_(True))
+        )).all())
+        if active_ids != member_ids:
+            raise HTTPException(422, "One or more participants are unavailable")
     new_soviet = Soviet(
         name=soviet_in.name,
         soviet_type=soviet_in.soviet_type
@@ -37,15 +46,13 @@ async def create_soviet(
     db.add(creator_membership)
 
     # Añadir camaradas adicionales indicados en el cuerpo
-    if soviet_in.member_ids:
-        unique_ids = {m_id for m_id in soviet_in.member_ids if m_id != current_comrade.id}
-        for m_id in unique_ids:
-            membership = SovietMember(
-                soviet_id=new_soviet.id,
-                comrade_id=m_id,
-                role=ComradeRole.COMRADE
-            )
-            db.add(membership)
+    for member_id in member_ids:
+        membership = SovietMember(
+            soviet_id=new_soviet.id,
+            comrade_id=member_id,
+            role=ComradeRole.COMRADE
+        )
+        db.add(membership)
 
     await db.commit()
 
@@ -120,6 +127,24 @@ async def list_my_soviets(
         })
         for soviet, content, sender_id, sender_name, created_at, unread in result.unique().all()
     ]
+
+@router.get("/{soviet_id}", response_model=SovietOut)
+async def read_soviet(
+    soviet_id: uuid.UUID,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    stmt = (
+        select(Soviet)
+        .join(Soviet.members)
+        .where(Soviet.id == soviet_id, SovietMember.comrade_id == current_comrade.id)
+        .options(selectinload(Soviet.members).selectinload(SovietMember.comrade))
+    )
+    soviet = (await db.execute(stmt)).scalars().first()
+    if soviet is None:
+        raise HTTPException(404, "Chat not found")
+    return soviet
+
 
 @router.post("/{soviet_id}/join", response_model=SovietOut)
 async def join_soviet(
