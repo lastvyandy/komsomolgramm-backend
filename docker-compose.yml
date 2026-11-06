@@ -1,0 +1,49 @@
+services:
+  komsomol_db:
+    image: postgres:16-alpine
+    container_name: komsomol_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: komsomolgram_db
+      POSTGRES_USER: commissar
+      POSTGRES_PASSWORD: state_secret_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commissar -d komsomolgram_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  komsomol_redis:
+    image: redis:7-alpine
+    container_name: komsomol_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  komsomol_api:
+    build: .
+    container_name: komsomol_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      komsomol_db:
+        condition: service_healthy
+      komsomol_redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
