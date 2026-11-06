@@ -83,6 +83,8 @@ async def soviet_websocket_endpoint(
                 continue
 
             async with async_session_maker() as db:
+                sender = await db.get(Comrade, comrade_id)
+                bubble_color = sender.bubble_color if sender else None
                 new_dispatch = Dispatch(
                     soviet_id=soviet_id,
                     sender_id=comrade_id,
@@ -102,6 +104,7 @@ async def soviet_websocket_endpoint(
                 "sender_id": str(comrade_id),
                 "sender_username": sender_username,
                 "sender_callsign": sender_callsign,
+                "bubble_color": bubble_color,
                 "content": content,
                 "created_at": created_at_iso
             }

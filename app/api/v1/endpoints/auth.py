@@ -1,5 +1,6 @@
 import uuid
 
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
@@ -89,6 +90,22 @@ async def update_profile(
     if len(name) < 2:
         raise HTTPException(422, "Display name must contain at least two characters")
     current.callsign = name
+    await db.commit()
+    await db.refresh(current)
+    return current
+
+
+class BubbleColorUpdate(BaseModel):
+    color: Literal["red", "steel", "gold", "green"] | None
+
+
+@router.put("/me/bubble-color", response_model=ComradeOut)
+async def update_bubble_color(
+    payload: BubbleColorUpdate,
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    current.bubble_color = payload.color
     await db.commit()
     await db.refresh(current)
     return current

@@ -16,6 +16,7 @@ async def lifespan(app: FastAPI):
     # 1. Crear tablas en PostgreSQL
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bubble_color VARCHAR(16)")
 
     # 2. Inicializar SovietSocketManager y tarea de Redis Pub/Sub
     redis_client = get_redis_client()

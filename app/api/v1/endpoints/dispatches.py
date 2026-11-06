@@ -243,6 +243,7 @@ async def send_attachment(
     event.update(
         type="dispatch", sender_id=str(result.sender.id),
         sender_callsign=result.sender.callsign, sender_username=result.sender.username,
+        bubble_color=result.sender.bubble_color,
     )
     try:
         await get_socket_manager().publish_dispatch(soviet_id, event)
