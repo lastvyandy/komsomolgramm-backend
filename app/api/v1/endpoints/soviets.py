@@ -1,14 +1,14 @@
 import hashlib
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import select, func, true
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, Soviet, SovietMember, SovietType, ComradeRole
-from app.schemas.soviet import SovietCreate, SovietOut
+from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietType, ComradeRole
+from app.schemas.soviet import ChatPreview, SovietCreate, SovietOut
 
 router = APIRouter()
 
@@ -66,17 +66,38 @@ async def list_my_soviets(
     db: AsyncSession = Depends(get_async_db)
 ):
     """Lista todos los Soviets donde el camarada participa activamente."""
-    stmt = (
-        select(Soviet)
-        .join(Soviet.members)
-        .where(SovietMember.comrade_id == current_comrade.id)
-        .options(
-            selectinload(Soviet.members).selectinload(SovietMember.comrade)
+    latest = (
+        select(
+            func.left(Dispatch.content, 160).label("content"),
+            Dispatch.sender_id,
+            Comrade.callsign.label("sender_name"),
+            Dispatch.created_at,
         )
-        .order_by(Soviet.created_at.desc())
+        .select_from(Dispatch)
+        .outerjoin(Comrade, Dispatch.sender_id == Comrade.id)
+        .where(Dispatch.soviet_id == Soviet.id, Dispatch.is_purged.is_(False))
+        .order_by(Dispatch.created_at.desc(), Dispatch.id.desc())
+        .limit(1)
+        .correlate(Soviet)
+        .lateral("latest_dispatch")
+    )
+    stmt = (
+        select(Soviet, latest.c.content, latest.c.sender_id, latest.c.sender_name, latest.c.created_at)
+        .join(Soviet.members)
+        .outerjoin(latest, true())
+        .where(SovietMember.comrade_id == current_comrade.id)
+        .options(selectinload(Soviet.members).selectinload(SovietMember.comrade))
+        .order_by(func.coalesce(latest.c.created_at, Soviet.created_at).desc(), Soviet.id)
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    return [
+        SovietOut.model_validate(soviet).model_copy(update={
+            "last_message": ChatPreview(
+                content=content, sender_name=sender_name, sender_id=sender_id, created_at=created_at
+            ) if created_at is not None else None
+        })
+        for soviet, content, sender_id, sender_name, created_at in result.unique().all()
+    ]
 
 @router.post("/{soviet_id}/join", response_model=SovietOut)
 async def join_soviet(
