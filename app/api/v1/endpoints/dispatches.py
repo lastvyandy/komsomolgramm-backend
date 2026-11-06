@@ -1,7 +1,7 @@
 import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import select, tuple_
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,7 +108,7 @@ async def edit_dispatch(
     await require_membership(db, soviet_id, current_comrade)
     statement = (
         select(Dispatch)
-        .options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment))
+        .options(selectinload(Dispatch.sender))
         .where(
             Dispatch.id == dispatch_id,
             Dispatch.soviet_id == soviet_id,
@@ -120,7 +120,10 @@ async def edit_dispatch(
         raise HTTPException(404, "Message not found")
     if dispatch.sender_id != current_comrade.id:
         raise HTTPException(403, "Only the author can edit this message")
-    if dispatch.attachment is not None:
+    has_attachment = await db.scalar(
+        select(DispatchAttachment.dispatch_id).where(DispatchAttachment.dispatch_id == dispatch_id)
+    )
+    if has_attachment is not None:
         raise HTTPException(400, "Media captions cannot be edited yet")
 
     content = payload.content.strip()
@@ -152,7 +155,6 @@ async def delete_dispatch(
     await require_membership(db, soviet_id, current_comrade)
     statement = (
         select(Dispatch)
-        .options(selectinload(Dispatch.attachment))
         .where(
             Dispatch.id == dispatch_id,
             Dispatch.soviet_id == soviet_id,
@@ -165,10 +167,9 @@ async def delete_dispatch(
     if dispatch.sender_id != current_comrade.id:
         raise HTTPException(403, "Only the author can delete this message")
 
-    if dispatch.attachment is not None:
-        attachment = dispatch.attachment
-        dispatch.attachment = None
-        await db.delete(attachment)
+    await db.execute(
+        delete(DispatchAttachment).where(DispatchAttachment.dispatch_id == dispatch_id)
+    )
     dispatch.is_purged = True
     message_id = str(dispatch.id)
     await db.commit()
