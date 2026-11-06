@@ -86,3 +86,15 @@ class Dispatch(Base):
 
     soviet: Mapped["Soviet"] = relationship(back_populates="dispatches")
     sender: Mapped["Comrade"] = relationship()
+    attachment: Mapped["DispatchAttachment | None"] = relationship()
+
+
+class DispatchAttachment(Base):
+    __tablename__ = "dispatch_attachments"
+
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True
+    )
+    name: Mapped[str] = mapped_column(String(180))
+    mime_type: Mapped[str] = mapped_column(String(80))
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
