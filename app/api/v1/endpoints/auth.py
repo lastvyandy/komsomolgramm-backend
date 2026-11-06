@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.db.session import get_async_db
-from app.models.models import Comrade
+from app.models.models import Comrade, ComradeAvatar
 from app.schemas.comrade import ComradeCreate, ComradeOut, Token
 from app.api.deps import get_current_comrade
 
@@ -87,9 +90,63 @@ async def search_comrades(
         .where(
             Comrade.id != current_comrade.id,
             Comrade.is_active == True,
-            (Comrade.username.ilike(f"%{clean_query}%") | Comrade.callsign.ilike(f"%{clean_query}%"))
+            (Comrade.username.icontains(clean_query, autoescape=True) | Comrade.callsign.icontains(clean_query, autoescape=True))
         )
+        .order_by(Comrade.username)
         .limit(20)
     )
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+@router.put("/me/avatar", status_code=204)
+async def set_avatar(
+    request: Request,
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    if request.headers.get("content-type") != "image/jpeg":
+        raise HTTPException(415, "Expected a JPEG image")
+    image = bytearray()
+    async for chunk in request.stream():
+        if len(image) + len(chunk) > 512 * 1024:
+            raise HTTPException(413, "Image exceeds 512 KiB")
+        image.extend(chunk)
+    if not image.startswith(b"\xff\xd8\xff") or not image.endswith(b"\xff\xd9"):
+        raise HTTPException(422, "Invalid JPEG image")
+    statement = insert(ComradeAvatar).values(comrade_id=current.id, image=bytes(image))
+    await db.execute(statement.on_conflict_do_update(
+        index_elements=[ComradeAvatar.comrade_id], set_={"image": statement.excluded.image}
+    ))
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/me/avatar", status_code=204)
+async def remove_avatar(
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await db.execute(delete(ComradeAvatar).where(ComradeAvatar.comrade_id == current.id))
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/avatar/{comrade_id}", response_class=Response)
+async def get_avatar(
+    comrade_id: uuid.UUID,
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    result = await db.execute(
+        select(ComradeAvatar.image).join(Comrade).where(
+            ComradeAvatar.comrade_id == comrade_id, Comrade.is_active.is_(True)
+        )
+    )
+    image = result.scalar_one_or_none()
+    if image is None:
+        raise HTTPException(404, "Profile photo not found")
+    return Response(image, media_type="image/jpeg", headers={
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    })

@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Enum, Text
+from sqlalchemy import String, DateTime, ForeignKey, Enum, Text, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
@@ -31,6 +31,15 @@ class Comrade(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list["SovietMember"]] = relationship(back_populates="comrade")
+
+class ComradeAvatar(Base):
+    __tablename__ = "comrade_avatars"
+
+    comrade_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True
+    )
+    image: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
 
 class Soviet(Base):
     __tablename__ = "soviets"
