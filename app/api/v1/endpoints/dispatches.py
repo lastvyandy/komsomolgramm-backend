@@ -1,5 +1,6 @@
+import logging
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
@@ -7,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch
-from app.schemas.dispatch import DispatchOut
+from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment
+from app.schemas.dispatch import AttachmentOut, DispatchOut
+from app.api.v1.endpoints.ws import get_socket_manager
 
 router = APIRouter()
 
@@ -36,7 +38,7 @@ async def get_soviet_dispatches(
     # 2. Consultar despachos ordenados por fecha ascendente para el cliente móvil
     stmt = (
         select(Dispatch)
-        .options(selectinload(Dispatch.sender))
+        .options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment))
         .where(
             Dispatch.soviet_id == soviet_id,
             Dispatch.is_purged == False  # noqa: E712
@@ -93,3 +95,113 @@ async def mark_dispatch_read(
     ))
     await db.commit()
     return Response(status_code=204)
+
+
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+ATTACHMENT_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif",
+    "video/mp4", "video/webm", "video/3gpp", "video/quicktime",
+    "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/opus",
+    "audio/wav", "audio/x-wav", "audio/flac", "audio/webm", "audio/3gpp",
+}
+logger = logging.getLogger(__name__)
+
+
+async def require_membership(db: AsyncSession, soviet_id: uuid.UUID, comrade: Comrade):
+    membership = await db.scalar(select(SovietMember.id).where(
+        SovietMember.soviet_id == soviet_id, SovietMember.comrade_id == comrade.id,
+    ).limit(1))
+    if membership is None:
+        raise HTTPException(403, "Chat membership required")
+
+
+def attachment_query(soviet_id: uuid.UUID):
+    return select(DispatchAttachment).join(Dispatch).where(
+        Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False),
+    )
+
+
+@router.post("/{soviet_id}/attachments", response_model=DispatchOut, status_code=201)
+async def send_attachment(
+    soviet_id: uuid.UUID,
+    request: Request,
+    name: str = Query(min_length=1, max_length=180),
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await require_membership(db, soviet_id, current_comrade)
+    mime_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    if mime_type not in ATTACHMENT_TYPES:
+        raise HTTPException(415, "Unsupported attachment type")
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(413, "Attachment exceeds 20 MiB")
+        data.extend(chunk)
+    if not data:
+        raise HTTPException(400, "Empty attachment")
+
+    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data))
+    dispatch = Dispatch(
+        soviet_id=soviet_id, sender=current_comrade, attachment=attachment,
+        content={"image": "Фото", "video": "Видео", "audio": "Аудио"}[mime_type.split("/")[0]],
+    )
+    db.add(dispatch)
+    await db.flush()
+    result = DispatchOut.model_validate(dispatch)
+    await db.commit()
+
+    event = result.model_dump(mode="json", exclude={"sender", "is_purged"})
+    event.update(
+        type="dispatch", sender_id=str(result.sender.id),
+        sender_callsign=result.sender.callsign, sender_username=result.sender.username,
+    )
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, event)
+    except Exception:
+        logger.exception("Attachment %s saved but live delivery failed", result.id)
+    return result
+
+
+@router.get("/{soviet_id}/attachments", response_model=list[AttachmentOut])
+async def list_attachments(
+    soviet_id: uuid.UUID,
+    kind: str = Query(default="media", pattern="^(media|gif|audio)$"),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await require_membership(db, soviet_id, current_comrade)
+    mime_type = DispatchAttachment.mime_type
+    filters = {
+        "media": (mime_type.startswith("image/") & (mime_type != "image/gif")) | mime_type.startswith("video/"),
+        "gif": mime_type == "image/gif",
+        "audio": mime_type.startswith("audio/"),
+    }
+    statement = attachment_query(soviet_id).where(filters[kind]).order_by(
+        Dispatch.created_at.desc(), Dispatch.id.desc(),
+    ).offset(offset).limit(limit)
+    return (await db.scalars(statement)).all()
+
+
+@router.get("/{soviet_id}/attachments/{dispatch_id}")
+async def download_attachment(
+    soviet_id: uuid.UUID,
+    dispatch_id: uuid.UUID,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await require_membership(db, soviet_id, current_comrade)
+    attachment = (await db.execute(
+        attachment_query(soviet_id).with_only_columns(
+            DispatchAttachment.data, DispatchAttachment.mime_type,
+        ).where(DispatchAttachment.dispatch_id == dispatch_id)
+    )).one_or_none()
+    if attachment is None:
+        raise HTTPException(404, "Attachment not found")
+    return Response(attachment.data, media_type=attachment.mime_type, headers={
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": "attachment",
+        "X-Content-Type-Options": "nosniff",
+    })
