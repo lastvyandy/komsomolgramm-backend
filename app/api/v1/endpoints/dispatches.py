@@ -1,7 +1,7 @@
 import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import select, tuple_
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
 from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment
-from app.schemas.dispatch import AttachmentOut, DispatchOut
+from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut
 from app.api.v1.endpoints.ws import get_socket_manager
 
 router = APIRouter()
@@ -94,6 +94,94 @@ async def mark_dispatch_read(
             tuple_(statement.excluded.message_created_at, statement.excluded.message_id),
     ))
     await db.commit()
+    return Response(status_code=204)
+
+
+@router.patch("/{soviet_id}/messages/{dispatch_id}", response_model=DispatchOut)
+async def edit_dispatch(
+    soviet_id: uuid.UUID,
+    dispatch_id: uuid.UUID,
+    payload: DispatchCreate,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await require_membership(db, soviet_id, current_comrade)
+    statement = (
+        select(Dispatch)
+        .options(selectinload(Dispatch.sender))
+        .where(
+            Dispatch.id == dispatch_id,
+            Dispatch.soviet_id == soviet_id,
+            Dispatch.is_purged.is_(False),
+        )
+    )
+    dispatch = (await db.execute(statement)).scalar_one_or_none()
+    if dispatch is None:
+        raise HTTPException(404, "Message not found")
+    if dispatch.sender_id != current_comrade.id:
+        raise HTTPException(403, "Only the author can edit this message")
+    has_attachment = await db.scalar(
+        select(DispatchAttachment.dispatch_id).where(DispatchAttachment.dispatch_id == dispatch_id)
+    )
+    if has_attachment is not None:
+        raise HTTPException(400, "Media captions cannot be edited yet")
+
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(422, "Message cannot be empty")
+    dispatch.content = content
+    result = DispatchOut.model_validate(dispatch)
+    await db.commit()
+
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, {
+            "type": "edit_dispatch",
+            "id": str(dispatch.id),
+            "sender_id": str(current_comrade.id),
+            "content": content,
+        })
+    except Exception:
+        logger.exception("Message %s saved but edit notification failed", dispatch.id)
+    return result
+
+
+@router.delete("/{soviet_id}/messages/{dispatch_id}", status_code=204)
+async def delete_dispatch(
+    soviet_id: uuid.UUID,
+    dispatch_id: uuid.UUID,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await require_membership(db, soviet_id, current_comrade)
+    statement = (
+        select(Dispatch)
+        .where(
+            Dispatch.id == dispatch_id,
+            Dispatch.soviet_id == soviet_id,
+            Dispatch.is_purged.is_(False),
+        )
+    )
+    dispatch = (await db.execute(statement)).scalar_one_or_none()
+    if dispatch is None:
+        raise HTTPException(404, "Message not found")
+    if dispatch.sender_id != current_comrade.id:
+        raise HTTPException(403, "Only the author can delete this message")
+
+    await db.execute(
+        delete(DispatchAttachment).where(DispatchAttachment.dispatch_id == dispatch_id)
+    )
+    dispatch.is_purged = True
+    message_id = str(dispatch.id)
+    await db.commit()
+
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, {
+            "type": "delete_dispatch",
+            "id": message_id,
+            "sender_id": str(current_comrade.id),
+        })
+    except Exception:
+        logger.exception("Message %s deleted but delete notification failed", message_id)
     return Response(status_code=204)
 
 
