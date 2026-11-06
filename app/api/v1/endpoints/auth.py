@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,6 +74,25 @@ async def read_current_comrade_dossier(
 ):
     """Devuelve el expediente del camarada autenticado."""
     return current_comrade
+
+class ProfileUpdate(BaseModel):
+    callsign: str = Field(min_length=2, max_length=100)
+
+
+@router.patch("/me", response_model=ComradeOut)
+async def update_profile(
+    profile: ProfileUpdate,
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    name = profile.callsign.strip()
+    if len(name) < 2:
+        raise HTTPException(422, "Display name must contain at least two characters")
+    current.callsign = name
+    await db.commit()
+    await db.refresh(current)
+    return current
+
 
 @router.get("/search", response_model=list[ComradeOut])
 async def search_comrades(
