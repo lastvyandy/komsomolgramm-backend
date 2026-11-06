@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
@@ -18,6 +19,8 @@ async def create_soviet(
     db: AsyncSession = Depends(get_async_db)
 ):
     """Crea un Soviet (grupo o canal) y asigna al creador como Secretario General."""
+    if soviet_in.soviet_type == SovietType.DIRECT:
+        raise HTTPException(400, "Use the direct chat endpoint")
     new_soviet = Soviet(
         name=soviet_in.name,
         soviet_type=soviet_in.soviet_type
@@ -91,6 +94,9 @@ async def join_soviet(
             detail="El Soviet especificado no consta en los registros estatales."
         )
 
+    if target_soviet.soviet_type == SovietType.DIRECT:
+        raise HTTPException(403, "Direct chats are private")
+
     # Verificar si ya es miembro
     mem_query = select(SovietMember).where(
         SovietMember.soviet_id == soviet_id,
@@ -145,18 +151,27 @@ async def get_or_create_direct_soviet(
             detail="El camarada destinatario no consta en el censo activo."
         )
 
+    # Serialize concurrent requests for the same unordered pair until commit.
+    pair = ":".join(sorted((str(current_comrade.id), str(target_comrade_id))))
+    lock_id = int.from_bytes(hashlib.sha256(pair.encode()).digest()[:8], "big", signed=True)
+    await db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+
     # 2. Buscar si ya existe un Soviet de tipo DIRECT compartido entre ambos
     find_stmt = (
         select(SovietMember.soviet_id)
         .join(Soviet, Soviet.id == SovietMember.soviet_id)
         .where(
             Soviet.soviet_type == SovietType.DIRECT,
-            SovietMember.comrade_id.in_([current_comrade.id, target_comrade_id])
         )
         .group_by(SovietMember.soviet_id)
-        .having(func.count(SovietMember.comrade_id) == 2)
+        .having(
+            func.count(SovietMember.comrade_id) == 2,
+            func.count(func.distinct(SovietMember.comrade_id)).filter(
+                SovietMember.comrade_id.in_([current_comrade.id, target_comrade_id])
+            ) == 2,
+        )
     )
-    existing_soviet_id = (await db.execute(find_stmt)).scalar_one_or_none()
+    existing_soviet_id = (await db.execute(find_stmt.order_by(SovietMember.soviet_id))).scalars().first()
 
     if existing_soviet_id:
         stmt_existing = (
