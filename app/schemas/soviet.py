@@ -31,5 +31,6 @@ class SovietOut(SovietBase):
     created_at: datetime
     members: list[SovietMemberOut] = []
     last_message: ChatPreview | None = None
+    unread_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)

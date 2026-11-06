@@ -1,12 +1,13 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import select, tuple_
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, SovietMember, Dispatch
+from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch
 from app.schemas.dispatch import DispatchOut
 
 router = APIRouter()
@@ -40,7 +41,7 @@ async def get_soviet_dispatches(
             Dispatch.soviet_id == soviet_id,
             Dispatch.is_purged == False  # noqa: E712
         )
-        .order_by(Dispatch.created_at.desc())
+        .order_by(Dispatch.created_at.desc(), Dispatch.id.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -49,3 +50,46 @@ async def get_soviet_dispatches(
 
     # Revertir para entregar en orden cronológico (los más antiguos primero)
     return list(reversed(dispatches))
+
+@router.put("/{soviet_id}/read/{dispatch_id}", status_code=204)
+async def mark_dispatch_read(
+    soviet_id: uuid.UUID,
+    dispatch_id: uuid.UUID,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    membership_id = await db.scalar(
+        select(SovietMember.id).where(
+            SovietMember.soviet_id == soviet_id,
+            SovietMember.comrade_id == current_comrade.id,
+        )
+    )
+    if membership_id is None:
+        raise HTTPException(403, "Chat membership required")
+
+    message_created_at = await db.scalar(
+        select(Dispatch.created_at).where(
+            Dispatch.id == dispatch_id,
+            Dispatch.soviet_id == soviet_id,
+            Dispatch.is_purged.is_(False),
+        )
+    )
+    if message_created_at is None:
+        raise HTTPException(404, "Message not found in this chat")
+
+    statement = insert(SovietReadCursor).values(
+        membership_id=membership_id,
+        message_created_at=message_created_at,
+        message_id=dispatch_id,
+    )
+    await db.execute(statement.on_conflict_do_update(
+        index_elements=[SovietReadCursor.membership_id],
+        set_={
+            "message_created_at": statement.excluded.message_created_at,
+            "message_id": statement.excluded.message_id,
+        },
+        where=tuple_(SovietReadCursor.message_created_at, SovietReadCursor.message_id) <
+            tuple_(statement.excluded.message_created_at, statement.excluded.message_id),
+    ))
+    await db.commit()
+    return Response(status_code=204)

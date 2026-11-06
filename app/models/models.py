@@ -64,6 +64,16 @@ class SovietMember(Base):
     soviet: Mapped["Soviet"] = relationship(back_populates="members")
     comrade: Mapped["Comrade"] = relationship(back_populates="memberships")
 
+class SovietReadCursor(Base):
+    __tablename__ = "soviet_read_cursors"
+
+    membership_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("soviet_members.id", ondelete="CASCADE"), primary_key=True
+    )
+    message_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    message_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+
+
 class Dispatch(Base):
     __tablename__ = "dispatches"
 
