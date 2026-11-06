@@ -1,6 +1,6 @@
 import uuid
 
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
@@ -96,7 +96,7 @@ async def update_profile(
 
 
 class BubbleColorUpdate(BaseModel):
-    color: Literal["red", "steel", "gold", "green"] | None
+    color: Literal["red", "steel", "gold", "green"] | Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")] | None
 
 
 @router.put("/me/bubble-color", response_model=ComradeOut)
