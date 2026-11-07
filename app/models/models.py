@@ -27,6 +27,7 @@ class Comrade(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     callsign: Mapped[str] = mapped_column(String(100), nullable=False)
     bubble_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    bio: Mapped[str] = mapped_column(String(280), default="", server_default="", nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -138,6 +139,7 @@ class ComradePresence(Base):
     __tablename__ = "comrade_presence"
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
     show_last_seen: Mapped[bool] = mapped_column(default=True)
+    show_battery: Mapped[bool] = mapped_column(default=True, server_default="true", nullable=False)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

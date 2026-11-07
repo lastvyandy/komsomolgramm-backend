@@ -20,6 +20,9 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE dispatches ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES dispatches(id) ON DELETE SET NULL")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bubble_color VARCHAR(16)")
 
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bio VARCHAR(280) NOT NULL DEFAULT ''")
+        await conn.exec_driver_sql("ALTER TABLE comrade_presence ADD COLUMN IF NOT EXISTS show_battery BOOLEAN NOT NULL DEFAULT true")
+
     configure_push()
 
     # 2. Inicializar SovietSocketManager y tarea de Redis Pub/Sub

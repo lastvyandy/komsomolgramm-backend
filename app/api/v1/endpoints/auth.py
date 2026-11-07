@@ -1,11 +1,14 @@
 import uuid
+import re
+import json
 import hashlib
 
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash, verify_password, create_access_token
@@ -21,8 +24,10 @@ async def register_comrade(
     comrade_in: ComradeCreate,
     db: AsyncSession = Depends(get_async_db)
 ):
-    # Verificar si el usuario ya existe
-    query = select(Comrade).where(Comrade.username == comrade_in.username)
+    username = comrade_in.username.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_]{3,50}", username):
+        raise HTTPException(422, "Username must contain 3-50 letters, digits or underscores")
+    query = select(Comrade).where(func.lower(Comrade.username) == username)
     result = await db.execute(query)
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -31,13 +36,17 @@ async def register_comrade(
         )
 
     comrade = Comrade(
-        username=comrade_in.username,
+        username=username,
         callsign=comrade_in.callsign,
         hashed_password=get_password_hash(comrade_in.password),
         is_active=True
     )
     db.add(comrade)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Username already in use")
     await db.refresh(comrade)
     return comrade
 
@@ -78,7 +87,9 @@ async def read_current_comrade_dossier(
     return current_comrade
 
 class ProfileUpdate(BaseModel):
-    callsign: str = Field(min_length=2, max_length=100)
+    callsign: str | None = Field(default=None, min_length=2, max_length=100)
+    username: str | None = Field(default=None, min_length=3, max_length=50)
+    bio: str | None = Field(default=None, max_length=280)
 
 
 @router.patch("/me", response_model=ComradeOut)
@@ -87,13 +98,40 @@ async def update_profile(
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
-    name = profile.callsign.strip()
-    if len(name) < 2:
-        raise HTTPException(422, "Display name must contain at least two characters")
-    current.callsign = name
-    await db.commit()
+    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set):
+        raise HTTPException(422, "Provide non-null profile fields")
+    if profile.callsign is not None:
+        name = profile.callsign.strip()
+        if len(name) < 2:
+            raise HTTPException(422, "Display name must contain at least two characters")
+        current.callsign = name
+    if profile.username is not None and profile.username != current.username:
+        username = profile.username.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_]{3,50}", username):
+            raise HTTPException(422, "Username must contain 3-50 letters, digits or underscores")
+        other = await db.scalar(select(Comrade.id).where(
+            func.lower(Comrade.username) == username, Comrade.id != current.id))
+        if other is not None:
+            raise HTTPException(409, "Username already in use")
+        current.username = username
+    if profile.bio is not None:
+        current.bio = profile.bio.strip()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Username already in use")
     await db.refresh(current)
     return current
+
+
+@router.get("/profile/{person_id}", response_model=ComradeOut)
+async def person_profile(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade),
+                         db: AsyncSession = Depends(get_async_db)):
+    person = await db.get(Comrade, person_id)
+    if person is None or not person.is_active:
+        raise HTTPException(404, "Person not found")
+    return person
 
 
 class BubbleColorUpdate(BaseModel):
@@ -300,6 +338,8 @@ async def delete_contact(person_id: uuid.UUID, current: Comrade = Depends(get_cu
 class PresenceHeartbeat(BaseModel):
     session_id: uuid.UUID
     active: bool
+    battery_level: int | None = Field(default=None, ge=0, le=100)
+    battery_charging: bool | None = None
 
 
 class PresencePrivacy(BaseModel):
@@ -321,6 +361,11 @@ async def heartbeat_presence(payload: PresenceHeartbeat, current: Comrade = Depe
         else:
             pipeline.zrem(key, str(payload.session_id))
         await pipeline.execute()
+    privacy = await db.get(ComradePresence, current.id)
+    if payload.active and payload.battery_level is not None and (privacy is None or privacy.show_battery):
+        await redis.set(f"battery:{current.id}", json.dumps({
+            "level": payload.battery_level, "charging": payload.battery_charging,
+        }), ex=90)
     statement = insert(ComradePresence).values(comrade_id=current.id, last_seen=now)
     await db.execute(statement.on_conflict_do_update(index_elements=[ComradePresence.comrade_id], set_={"last_seen": now}))
     await db.commit()
@@ -341,6 +386,28 @@ async def set_presence_privacy(payload: PresencePrivacy, current: Comrade = Depe
     return payload
 
 
+class BatteryPrivacy(BaseModel):
+    show_battery: bool
+
+
+@router.get("/me/battery-privacy", response_model=BatteryPrivacy)
+async def battery_privacy(current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    row = await db.get(ComradePresence, current.id)
+    return {"show_battery": row.show_battery if row else True}
+
+
+@router.put("/me/battery-privacy", response_model=BatteryPrivacy)
+async def set_battery_privacy(payload: BatteryPrivacy, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    from app.core.redis import get_redis_client
+    statement = insert(ComradePresence).values(comrade_id=current.id, show_battery=payload.show_battery)
+    await db.execute(statement.on_conflict_do_update(
+        index_elements=[ComradePresence.comrade_id], set_={"show_battery": payload.show_battery}))
+    await db.commit()
+    if not payload.show_battery:
+        await get_redis_client().delete(f"battery:{current.id}")
+    return payload
+
+
 @router.get("/presence/{person_id}")
 async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
     from app.core.redis import get_redis_client
@@ -355,7 +422,17 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
     if not visible:
         return {"online": None, "last_seen": None, "hidden": True}
     count = await get_redis_client().zcount(f"presence:{person_id}", datetime.now(timezone.utc).timestamp(), "+inf")
-    return {"online": bool(count), "last_seen": row.last_seen if row else None, "hidden": False}
+    battery = None
+    if count and (row is None or row.show_battery):
+        raw = await get_redis_client().get(f"battery:{person_id}")
+        if raw:
+            try:
+                battery = json.loads(raw)
+            except (ValueError, TypeError):
+                pass
+    return {"online": bool(count), "last_seen": row.last_seen if row else None, "hidden": False,
+            "battery_level": battery.get("level") if battery else None,
+            "battery_charging": battery.get("charging") if battery else None}
 
 
 @router.get("/photos/{person_id}")
