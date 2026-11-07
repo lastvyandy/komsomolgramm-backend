@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
     # 1. Crear tablas en PostgreSQL
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.exec_driver_sql("ALTER TABLE dispatches ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES dispatches(id) ON DELETE SET NULL")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bubble_color VARCHAR(16)")
 
     configure_push()

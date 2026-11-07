@@ -91,6 +91,7 @@ class Dispatch(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     soviet_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("soviets.id", ondelete="CASCADE"), index=True, nullable=False)
     sender_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("comrades.id", ondelete="SET NULL"), index=True, nullable=True)
+    reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dispatches.id", ondelete="SET NULL"), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     is_purged: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
@@ -116,3 +117,11 @@ class Contact(Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
     person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+
+class ComradePresence(Base):
+    __tablename__ = "comrade_presence"
+    comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    show_last_seen: Mapped[bool] = mapped_column(default=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

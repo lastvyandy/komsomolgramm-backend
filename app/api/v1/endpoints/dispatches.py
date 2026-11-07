@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
 from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment
-from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut
+from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut
 from app.api.v1.endpoints.ws import get_socket_manager
+from app.services.replies import reply_summaries, require_reply
 
 router = APIRouter()
 
@@ -51,7 +52,8 @@ async def get_soviet_dispatches(
     dispatches = result.scalars().all()
 
     # Revertir para entregar en orden cronológico (los más antiguos primero)
-    return list(reversed(dispatches))
+    replies = await reply_summaries(db, soviet_id, {m.reply_to_id for m in dispatches if m.reply_to_id})
+    return [DispatchOut.model_validate(m).model_copy(update={"reply": ReplyOut.model_validate(replies[m.reply_to_id]) if m.reply_to_id in replies else None}) for m in reversed(dispatches)]
 
 @router.put("/{soviet_id}/read/{dispatch_id}", status_code=204)
 async def mark_dispatch_read(
@@ -94,6 +96,14 @@ async def mark_dispatch_read(
             tuple_(statement.excluded.message_created_at, statement.excluded.message_id),
     ))
     await db.commit()
+    cursor = await db.get(SovietReadCursor, membership_id)
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, {
+            "type": "read", "reader_id": str(current_comrade.id),
+            "message_id": str(cursor.message_id), "message_created_at": cursor.message_created_at.isoformat(),
+        })
+    except Exception:
+        logger.exception("Read cursor stored but live delivery failed")
     return Response(status_code=204)
 
 
@@ -108,7 +118,7 @@ async def edit_dispatch(
     await require_membership(db, soviet_id, current_comrade)
     statement = (
         select(Dispatch)
-        .options(selectinload(Dispatch.sender))
+        .options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment))
         .where(
             Dispatch.id == dispatch_id,
             Dispatch.soviet_id == soviet_id,
@@ -214,10 +224,12 @@ async def send_attachment(
     soviet_id: uuid.UUID,
     request: Request,
     name: str = Query(min_length=1, max_length=180),
+    reply_to_id: uuid.UUID | None = Query(default=None),
     current_comrade: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
     await require_membership(db, soviet_id, current_comrade)
+    reply_id, reply = await require_reply(db, soviet_id, reply_to_id)
     mime_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
     if mime_type not in ATTACHMENT_TYPES:
         raise HTTPException(415, "Unsupported attachment type")
@@ -231,12 +243,12 @@ async def send_attachment(
 
     attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data))
     dispatch = Dispatch(
-        soviet_id=soviet_id, sender=current_comrade, attachment=attachment,
+        soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id,
         content={"image": "Фото", "video": "Видео", "audio": "Аудио"}[mime_type.split("/")[0]],
     )
     db.add(dispatch)
     await db.flush()
-    result = DispatchOut.model_validate(dispatch)
+    result = DispatchOut.model_validate(dispatch).model_copy(update={"reply": ReplyOut.model_validate(reply) if reply else None})
     await db.commit()
 
     event = result.model_dump(mode="json", exclude={"sender", "is_purged"})
@@ -294,3 +306,31 @@ async def download_attachment(
         "Content-Disposition": "attachment",
         "X-Content-Type-Options": "nosniff",
     })
+
+
+
+@router.get("/{soviet_id}/readers")
+async def read_receipts(soviet_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    rows = (await db.execute(select(SovietMember.comrade_id, SovietReadCursor.message_id, SovietReadCursor.message_created_at)
+        .outerjoin(SovietReadCursor, SovietReadCursor.membership_id == SovietMember.id)
+        .where(SovietMember.soviet_id == soviet_id, SovietMember.comrade_id != current.id))).all()
+    return [{"reader_id": str(person), "message_id": str(message) if message else None,
+             "message_created_at": created.isoformat() if created else None} for person, message, created in rows]
+
+
+@router.get("/{soviet_id}/context/{dispatch_id}", response_model=list[DispatchOut])
+async def reply_context(soviet_id: uuid.UUID, dispatch_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    target = await db.scalar(select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False)))
+    if target is None:
+        raise HTTPException(404, "Message not found")
+    base = select(Dispatch).options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(
+        Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False))
+    before = (await db.scalars(base.where(tuple_(Dispatch.created_at, Dispatch.id) <= (target.created_at, target.id))
+        .order_by(Dispatch.created_at.desc(), Dispatch.id.desc()).limit(26))).all()
+    after = (await db.scalars(base.where(tuple_(Dispatch.created_at, Dispatch.id) > (target.created_at, target.id))
+        .order_by(Dispatch.created_at, Dispatch.id).limit(25))).all()
+    messages = list(reversed(before)) + list(after)
+    replies = await reply_summaries(db, soviet_id, {m.reply_to_id for m in messages if m.reply_to_id})
+    return [DispatchOut.model_validate(m).model_copy(update={"reply": ReplyOut.model_validate(replies[m.reply_to_id]) if m.reply_to_id in replies else None}) for m in messages]

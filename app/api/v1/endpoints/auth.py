@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.db.session import get_async_db
-from app.models.models import Comrade, ComradeAvatar, PushDevice, Contact
+from app.models.models import Comrade, ComradeAvatar, PushDevice, Contact, ComradePresence
 from app.schemas.comrade import ComradeCreate, ComradeOut, Token
 from app.api.deps import get_current_comrade
 
@@ -251,3 +251,65 @@ async def delete_contact(person_id: uuid.UUID, current: Comrade = Depends(get_cu
     await db.execute(delete(Contact).where(Contact.owner_id == current.id, Contact.person_id == person_id))
     await db.commit()
     return Response(status_code=204)
+
+
+
+class PresenceHeartbeat(BaseModel):
+    session_id: uuid.UUID
+    active: bool
+
+
+class PresencePrivacy(BaseModel):
+    show_last_seen: bool
+
+
+@router.post("/presence", status_code=204)
+async def heartbeat_presence(payload: PresenceHeartbeat, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    from app.core.redis import get_redis_client
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    redis = get_redis_client()
+    key = f"presence:{current.id}"
+    async with redis.pipeline(transaction=True) as pipeline:
+        pipeline.zremrangebyscore(key, "-inf", now.timestamp())
+        if payload.active:
+            pipeline.zadd(key, {str(payload.session_id): now.timestamp() + 45})
+            pipeline.expire(key, 90)
+        else:
+            pipeline.zrem(key, str(payload.session_id))
+        await pipeline.execute()
+    statement = insert(ComradePresence).values(comrade_id=current.id, last_seen=now)
+    await db.execute(statement.on_conflict_do_update(index_elements=[ComradePresence.comrade_id], set_={"last_seen": now}))
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/me/presence-privacy", response_model=PresencePrivacy)
+async def presence_privacy(current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    row = await db.get(ComradePresence, current.id)
+    return {"show_last_seen": row.show_last_seen if row else True}
+
+
+@router.put("/me/presence-privacy", response_model=PresencePrivacy)
+async def set_presence_privacy(payload: PresencePrivacy, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    statement = insert(ComradePresence).values(comrade_id=current.id, show_last_seen=payload.show_last_seen)
+    await db.execute(statement.on_conflict_do_update(index_elements=[ComradePresence.comrade_id], set_={"show_last_seen": payload.show_last_seen}))
+    await db.commit()
+    return payload
+
+
+@router.get("/presence/{person_id}")
+async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    from app.core.redis import get_redis_client
+    from datetime import datetime, timezone
+    target = await db.get(Comrade, person_id)
+    if target is None or not target.is_active:
+        raise HTTPException(404, "Person not found")
+    # Exact activity is reciprocal: hiding your own activity hides others' exact activity too.
+    viewer = await db.get(ComradePresence, current.id)
+    row = await db.get(ComradePresence, person_id)
+    visible = (viewer is None or viewer.show_last_seen) and (row is None or row.show_last_seen)
+    if not visible:
+        return {"online": None, "last_seen": None, "hidden": True}
+    count = await get_redis_client().zcount(f"presence:{person_id}", datetime.now(timezone.utc).timestamp(), "+inf")
+    return {"online": bool(count), "last_seen": row.last_seen if row else None, "hidden": False}

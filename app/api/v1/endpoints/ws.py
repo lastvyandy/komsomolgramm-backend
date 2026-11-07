@@ -1,5 +1,6 @@
+import time
 import uuid
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -7,108 +8,118 @@ from app.core.security import decode_access_token
 from app.db.session import async_session_maker
 from app.models.models import Comrade, SovietMember, Dispatch
 from app.services.socket_manager import SovietSocketManager
+from app.services.replies import require_reply
 
 router = APIRouter()
 socket_manager: SovietSocketManager | None = None
 
+
 def get_socket_manager() -> SovietSocketManager:
     if socket_manager is None:
-        raise RuntimeError("El SovietSocketManager no ha sido inicializado.")
+        raise RuntimeError("Socket manager has not been initialized")
     return socket_manager
 
+
 @router.websocket("/soviets/{soviet_id}")
-async def soviet_websocket_endpoint(
-    websocket: WebSocket,
-    soviet_id: uuid.UUID,
-    token: str = Query(...)
-):
+async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, token: str = Query(...)):
     manager = get_socket_manager()
-
-    # 1. Validar el token JWT
     payload = decode_access_token(token)
-    if not payload or not payload.get("sub"):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
     try:
-        comrade_id = uuid.UUID(payload["sub"])
-    except ValueError:
+        comrade_id = uuid.UUID(payload["sub"]) if payload else None
+    except (ValueError, KeyError, TypeError):
+        comrade_id = None
+    if comrade_id is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    # 2. Verificar membresía
     async with async_session_maker() as db:
-        query = (
-            select(SovietMember)
-            .options(selectinload(SovietMember.comrade))
-            .where(
-                SovietMember.soviet_id == soviet_id,
-                SovietMember.comrade_id == comrade_id
-            )
-        )
-        res = await db.execute(query)
-        membership = res.scalar_one_or_none()
-
+        membership = await db.scalar(select(SovietMember).options(selectinload(SovietMember.comrade)).where(
+            SovietMember.soviet_id == soviet_id, SovietMember.comrade_id == comrade_id))
         if not membership or not membership.comrade.is_active:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
-
         sender_callsign = membership.comrade.callsign
         sender_username = membership.comrade.username
 
     await manager.connect(soviet_id, websocket)
-
+    last_typing = 0.0
+    was_typing = False
     try:
         while True:
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
             event_type = data.get("type", "dispatch")
-
-            # Caso A: Reacción / Sello partidario sobre un despacho
+            if event_type == "typing":
+                active = data.get("active") is True
+                now = time.monotonic()
+                if (active and now - last_typing >= 2) or (not active and was_typing):
+                    await manager.publish_dispatch(soviet_id, {
+                        "type": "typing", "sender_id": str(comrade_id),
+                        "sender_callsign": sender_callsign, "active": active,
+                    })
+                    if active:
+                        last_typing = now
+                    was_typing = active
+                continue
             if event_type == "reaction":
-                dispatch_id = data.get("dispatch_id")
+                try:
+                    target_id = uuid.UUID(str(data.get("dispatch_id")))
+                except ValueError:
+                    continue
                 stamp = data.get("stamp")
-                if dispatch_id and stamp:
-                    reaction_event = {
-                        "type": "reaction",
-                        "dispatch_id": dispatch_id,
-                        "stamp": stamp,
-                        "sender_callsign": sender_callsign
-                    }
-                    await manager.publish_dispatch(soviet_id, reaction_event)
+                if not isinstance(stamp, str) or not 1 <= len(stamp) <= 64:
+                    continue
+                async with async_session_maker() as db:
+                    target = await db.scalar(select(Dispatch.id).where(
+                        Dispatch.id == target_id, Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False)))
+                if target:
+                    await manager.publish_dispatch(soviet_id, {
+                        "type": "reaction", "dispatch_id": str(target_id), "stamp": stamp,
+                        "sender_callsign": sender_callsign,
+                    })
                 continue
-
-            # Caso B: Nuevo despacho de texto estándar
-            content = data.get("content", "").strip()
-            if not content:
+            if event_type != "dispatch":
                 continue
-
+            content = data.get("content")
+            if not isinstance(content, str) or not 1 <= len(content.strip()) <= 4000:
+                await websocket.send_json({"type": "error", "code": "invalid_content"})
+                continue
             async with async_session_maker() as db:
                 sender = await db.get(Comrade, comrade_id)
-                bubble_color = sender.bubble_color if sender else None
-                new_dispatch = Dispatch(
-                    soviet_id=soviet_id,
-                    sender_id=comrade_id,
-                    content=content
-                )
-                db.add(new_dispatch)
+                if sender is None or not sender.is_active:
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
+                try:
+                    reply_id, reply = await require_reply(db, soviet_id, data.get("reply_to_id"))
+                except HTTPException:
+                    await websocket.send_json({"type": "error", "code": "reply_unavailable"})
+                    continue
+                message = Dispatch(soviet_id=soviet_id, sender_id=comrade_id,
+                                   content=content.strip(), reply_to_id=reply_id)
+                db.add(message)
                 await db.commit()
-                await db.refresh(new_dispatch)
-
-                dispatch_id = str(new_dispatch.id)
-                created_at_iso = new_dispatch.created_at.isoformat()
-
-            outbound_event = {
-                "type": "dispatch",
-                "id": dispatch_id,
-                "soviet_id": str(soviet_id),
-                "sender_id": str(comrade_id),
-                "sender_username": sender_username,
-                "sender_callsign": sender_callsign,
-                "bubble_color": bubble_color,
-                "content": content,
-                "created_at": created_at_iso
-            }
-            await manager.publish_dispatch(soviet_id, outbound_event)
-
+                await db.refresh(message)
+                event = {
+                    "type": "dispatch", "id": str(message.id), "soviet_id": str(soviet_id),
+                    "sender_id": str(comrade_id), "sender_username": sender_username,
+                    "sender_callsign": sender_callsign, "bubble_color": sender.bubble_color,
+                    "content": message.content, "created_at": message.created_at.isoformat(),
+                    "reply_to_id": str(reply_id) if reply_id else None, "reply": reply,
+                }
+            await manager.publish_dispatch(soviet_id, event)
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(soviet_id, websocket)
+        if was_typing:
+            try:
+                await manager.publish_dispatch(soviet_id, {
+                    "type": "typing", "sender_id": str(comrade_id),
+                    "sender_callsign": sender_callsign, "active": False,
+                })
+            except Exception:
+                pass  # Clients also expire stale typing indicators after six seconds.

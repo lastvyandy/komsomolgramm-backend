@@ -14,6 +14,13 @@ class AttachmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ReplyOut(BaseModel):
+    id: uuid.UUID
+    sender_name: str
+    content: str
+    media_type: str | None = None
+
+
 class DispatchOut(BaseModel):
     id: uuid.UUID
     soviet_id: uuid.UUID
@@ -22,5 +29,8 @@ class DispatchOut(BaseModel):
     created_at: datetime
     sender: ComradeOut | None = None
     attachment: AttachmentOut | None = None
+    reply_to_id: uuid.UUID | None = None
+    reply: ReplyOut | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
