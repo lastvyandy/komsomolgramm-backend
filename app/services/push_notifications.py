@@ -30,6 +30,7 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
     if _app is None:
         return
     try:
+        event_type = payload.get("type", "dispatch")
         sender_id = uuid.UUID(payload["sender_id"])
         message_id = str(uuid.UUID(payload["id"]))
         async with _sender_limit:
@@ -52,6 +53,7 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                             "chat_id": str(chat_id),
                             "message_id": message_id,
                             "sender_id": str(sender_id),
+                            "event_type": event_type,
                         },
                         android=messaging.AndroidConfig(
                             priority="high", ttl=timedelta(hours=1)
