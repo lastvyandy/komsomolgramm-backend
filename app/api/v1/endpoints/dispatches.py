@@ -142,7 +142,7 @@ async def mark_dispatch_read(
     return Response(status_code=204)
 
 
-@router.post("/{soviet_id}/messages", response_model=DispatchOut, status_code=201)
+@router.post("/{soviet_id}/messages", status_code=204)
 async def create_text_dispatch(
     soviet_id: uuid.UUID,
     payload: DispatchCreate,
@@ -159,7 +159,6 @@ async def create_text_dispatch(
     db.add(message)
     await db.commit()
     await db.refresh(message)
-    result = DispatchOut.model_validate(message)
     event = {
         "type": "dispatch",
         "id": str(message.id),
@@ -177,7 +176,7 @@ async def create_text_dispatch(
         await get_socket_manager().publish_dispatch(soviet_id, event)
     except Exception:
         logger.exception("Message %s saved but live delivery failed", message.id)
-    return result
+    return Response(status_code=204)
 
 
 @router.patch("/{soviet_id}/messages/{dispatch_id}", response_model=DispatchOut)
