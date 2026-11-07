@@ -68,13 +68,16 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
                 continue
             if event_type == "buzz":
                 now = time.monotonic()
-                if now - last_buzz >= 5:
-                    await manager.publish_dispatch(soviet_id, {
-                        "type": "buzz",
-                        "sender_id": str(comrade_id),
-                        "sender_callsign": sender_callsign,
-                    })
-                    last_buzz = now
+                if now - last_buzz < 5:
+                    await websocket.send_json({"type": "error", "code": "buzz_rate_limited"})
+                    continue
+                await manager.publish_dispatch(soviet_id, {
+                    "type": "buzz",
+                    "sender_id": str(comrade_id),
+                    "sender_callsign": sender_callsign,
+                })
+                last_buzz = now
+                await websocket.send_json({"type": "buzz_sent"})
                 continue
             if event_type == "reaction":
                 try:
