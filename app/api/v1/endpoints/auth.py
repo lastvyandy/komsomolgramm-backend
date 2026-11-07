@@ -377,7 +377,8 @@ async def heartbeat_presence(payload: PresenceHeartbeat, current: Comrade = Depe
     if payload.active and payload.battery_level is not None and (privacy is None or privacy.show_battery):
         await redis.set(f"battery:{current.id}", json.dumps({
             "level": payload.battery_level, "charging": payload.battery_charging,
-        }), ex=90)
+            "updated_at": now.isoformat(),
+        }), ex=24 * 60 * 60)
     statement = insert(ComradePresence).values(comrade_id=current.id, last_seen=now)
     await db.execute(statement.on_conflict_do_update(index_elements=[ComradePresence.comrade_id], set_={"last_seen": now}))
     await db.commit()
@@ -431,20 +432,35 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
     viewer = await db.get(ComradePresence, current.id)
     row = await db.get(ComradePresence, person_id)
     visible = (viewer is None or viewer.show_last_seen) and (row is None or row.show_last_seen)
-    if not visible:
-        return {"online": None, "last_seen": None, "hidden": True}
-    count = await get_redis_client().zcount(f"presence:{person_id}", datetime.now(timezone.utc).timestamp(), "+inf")
+    redis = get_redis_client()
+    count = await redis.zcount(f"presence:{person_id}", datetime.now(timezone.utc).timestamp(), "+inf")
+    # Battery has its own explicit privacy switch, independent of last-seen sharing.
+    battery_hidden = row is not None and not row.show_battery
     battery = None
-    if count and (row is None or row.show_battery):
-        raw = await get_redis_client().get(f"battery:{person_id}")
+    if not battery_hidden:
+        raw = await redis.get(f"battery:{person_id}")
         if raw:
             try:
-                battery = json.loads(raw)
+                candidate = json.loads(raw)
+                if (isinstance(candidate, dict) and type(candidate.get("level")) is int
+                        and 0 <= candidate["level"] <= 100):
+                    battery = candidate
             except (ValueError, TypeError):
                 pass
-    return {"online": bool(count), "last_seen": row.last_seen if row else None, "hidden": False,
+    stale = bool(battery) and (not count or not visible)
+    if battery and not stale:
+        try:
+            reported = datetime.fromisoformat(battery["updated_at"])
+            stale = (datetime.now(timezone.utc) - reported).total_seconds() > 90
+        except (KeyError, TypeError, ValueError):
+            stale = True
+    return {"online": bool(count) if visible else None,
+            "last_seen": row.last_seen if row and visible else None, "hidden": not visible,
+            "battery_hidden": battery_hidden,
             "battery_level": battery.get("level") if battery else None,
-            "battery_charging": battery.get("charging") if battery else None}
+            "battery_charging": battery.get("charging") if battery else None,
+            "battery_updated_at": battery.get("updated_at") if battery else None,
+            "battery_stale": stale}
 
 
 @router.get("/photos/{person_id}")
