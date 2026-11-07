@@ -1,51 +1,82 @@
-# Android push notifications
+# Activar notificaciones Android (Firebase Cloud Messaging)
 
-## Android
+Firebase debe pertenecer al mismo proyecto en Android y en el servidor. Instalar el APK
+sin esa configuración no permite recibir avisos con la app cerrada.
 
-1. Create a Firebase project and register Android package `ru.komsomol.gram`.
-2. Download its client configuration to `app/google-services.json` in the Android repository.
-3. Rebuild and install the APK. Sign in and allow Android notification permission.
-   The Google Services plugin applies automatically when this file is present.
-4. Phones need compatible Google Play services. Without Firebase configuration,
-   Android notifications can only be delivered by an existing live chat connection.
+## 1. Proyecto y Android
 
-## VPS
+1. Abre https://console.firebase.google.com/ y crea un proyecto llamado Komsomolgram.
+   Google Analytics es opcional para este flujo.
+2. Añade una aplicación Android con el identificador exacto `ru.komsomol.gram`.
+3. Descarga `google-services.json`. Colócalo en `Komsomolgram/app/google-services.json`
+   (al lado de `app/build.gradle.kts`, fuera de `src`).
+4. Haz Sync en Android Studio y genera e instala de nuevo el APK. Inicia sesión y
+   acepta el permiso de notificaciones. El plugin ya se aplica automáticamente cuando
+   encuentra el archivo. No necesitas integrar Analytics ni añadir más dependencias.
 
-Create a Firebase Admin service-account key for the same project. Store it outside
-the repository at `/opt/komsomolgram-secrets/firebase-admin.json`, readable only by
-the server administrator. Never put this private key in the APK or commit it.
+Los teléfonos deben disponer de Google Play Services compatibles para este transporte.
 
-Add to the VPS `.env`:
+## 2. Credencial del servidor
 
-```dotenv
-FIREBASE_CREDENTIALS=/run/secrets/firebase-admin.json
-```
+En la configuración del MISMO proyecto Firebase, abre Cuentas de servicio → Firebase
+Admin SDK → Generar nueva clave privada. Es un archivo diferente de google-services.json.
+La clave privada se coloca solo en el VPS; nunca en Android ni en GitHub.
 
-Add a deployment overlay named `compose.push.yml`:
-
-```yaml
-services:
-  komsomol_api:
-    volumes:
-      - /opt/komsomolgram-secrets/firebase-admin.json:/run/secrets/firebase-admin.json:ro
-```
-
-From the backend directory, deploy with all the existing overlays:
+Crea el directorio en la sesión SSH del servidor:
 
 ```bash
-git pull
-docker compose -f compose.vps.yml -f compose.https.yml -f compose.push.yml up -d --build
+install -d -m 700 /opt/komsomolgram-secrets
 ```
 
-The new device table is created on startup. Reopen the updated Android app after
-deploying so it registers its device token.
+Desde PowerShell en tu PC, copia el archivo descargado (sustituye la ruta local):
 
-## Check delivery
+```powershell
+scp "C:\Users\corpo\Downloads\tu-clave-firebase.json" root@46.173.218.131:/opt/komsomolgram-secrets/firebase-admin.json
+```
 
-Use two accounts on two phones. Put the receiving app in the background and send
-text, a photo and a voice message from the other account. Check the custom sound,
-tap-to-open, muted chats and logout. Repeat with the receiving process removed
-from recents. Android force-stop blocks delivery until the app is reopened.
+De vuelta en la sesión SSH:
 
-The push payload contains message, sender, recipient and chat identifiers only.
-Message content is not sent to Firebase. The notification uses a generic preview.
+```bash
+chmod 600 /opt/komsomolgram-secrets/firebase-admin.json
+cd /opt/komsomolgram-backend
+git pull --ff-only origin main
+docker compose -f compose.vps.yml -f compose.push.yml up -d --build
+docker compose -f compose.vps.yml -f compose.push.yml logs --tail=80 komsomol_api
+```
+
+`compose.push.yml` ya está incluido en el repositorio y monta la clave en modo lectura,
+añadiendo FIREBASE_CREDENTIALS al contenedor. No hace falta editar .env para esta opción.
+Si utilizas además `compose.https.yml`, conserva ese `-f compose.https.yml` antes de
+`-f compose.push.yml` en tus comandos de despliegue habituales. No elimines volúmenes.
+
+El log debe mostrar `Firebase push initialized`. Si falta la clave, no se configura
+silenciosamente: el log lo indica y Ajustes muestra que falta configurar el servidor.
+No copies credenciales, tokens ni archivos privados al chat para diagnosticarlo.
+
+## 3. Prueba desde la app
+
+Tras instalar la app configurada, abre Ajustes → Notificaciones.
+
+- Comprueba el permiso de Android, la configuración de la app, la del servidor y el registro
+  del dispositivo. Reintentar vuelve a obtener el token y a registrarlo.
+- La prueba local comprueba que Android puede mostrar el aviso y reproducir el sonido.
+- La prueba desde el servidor comprueba la ruta real de Firebase. El envío aceptado indica
+  que Firebase lo recibió, no garantiza que Android ya lo haya mostrado. Hay un límite
+  de una prueba cada 30 segundos por cuenta.
+- Usa dos cuentas. Deja una app en segundo plano, bloquea el teléfono y envía texto, foto,
+  audio y zumbido desde la otra. Tocar el aviso abre el chat. Comprueba también silencio
+  de contactos/grupos y cierre de sesión.
+
+Quitar la app de recientes y forzar su detención son acciones distintas. Android bloquea
+FCM tras Forzar detención hasta que se abra la app otra vez. Los ajustes de batería del
+fabricante y el modo No molestar también pueden afectar la entrega y el sonido.
+
+El payload normal contiene identificadores y el nombre del remitente, sin el texto ni
+los adjuntos del mensaje. La vista previa visible es genérica.
+
+## Comprobaciones del código
+
+`python tests/check_push.py` con requirements-dev.txt comprueba con Firebase simulado:
+registro y propiedad de dispositivos, diagnóstico de configuración, prueba autenticada,
+límite de frecuencia, selección de destinatarios, prioridad y limpieza de tokens inválidos.
+La prueba real requiere las credenciales del proyecto y un teléfono configurado.

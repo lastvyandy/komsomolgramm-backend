@@ -149,6 +149,33 @@ async def unregister_push_device(
     return Response(status_code=204)
 
 
+@router.get("/me/push-status")
+async def push_status(current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    from app.services.push_notifications import push_ready
+    devices = (await db.scalars(select(PushDevice.token_hash).where(PushDevice.comrade_id == current.id))).all()
+    return {"configured": push_ready(), "registered_devices": len(devices)}
+
+
+@router.post("/me/push-test", status_code=202)
+async def test_push_device(payload: PushTokenUpdate,
+                           current: Comrade = Depends(get_current_comrade),
+                           db: AsyncSession = Depends(get_async_db)):
+    from app.services.push_notifications import push_ready, send_test_push
+    from app.core.redis import get_redis_client
+    if not push_ready():
+        raise HTTPException(503, "Firebase is not configured on the server")
+    device = await db.scalar(select(PushDevice).where(
+        PushDevice.token_hash == hashlib.sha256(payload.token.encode()).hexdigest(),
+        PushDevice.comrade_id == current.id))
+    if device is None:
+        raise HTTPException(404, "Register this device first")
+    if not await get_redis_client().set(f"push-test:{current.id}", "1", nx=True, ex=30):
+        raise HTTPException(429, "Wait 30 seconds before another test")
+    if not await send_test_push(device.token, current.id):
+        raise HTTPException(502, "Firebase did not accept the test message")
+    return {"accepted": True}
+
+
 @router.get("/search", response_model=list[ComradeOut])
 async def search_comrades(
     q: str = "",
@@ -356,3 +383,4 @@ async def primary_photo(photo_id: uuid.UUID, current: Comrade = Depends(get_curr
     await db.execute(statement.on_conflict_do_update(index_elements=[ComradeAvatar.comrade_id], set_={"image": statement.excluded.image}))
     await db.commit()
     return Response(status_code=204)
+

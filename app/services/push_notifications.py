@@ -18,12 +18,38 @@ _app = None
 
 def configure_push():
     global _app
-    path = os.environ.get("FIREBASE_CREDENTIALS")
-    if not path:
+    if _app is not None:
         return
-    _app = firebase_admin.initialize_app(
-        credentials.Certificate(path), options={"httpTimeout": 10}
-    )
+    path = os.environ.get("FIREBASE_CREDENTIALS") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not path:
+        logger.warning("Push disabled: set FIREBASE_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS")
+        return
+    try:
+        _app = firebase_admin.initialize_app(
+            credentials.Certificate(path), options={"httpTimeout": 10}
+        )
+        logger.info("Firebase push initialized")
+    except Exception:
+        logger.exception("Firebase push credentials could not be loaded")
+
+
+def push_ready() -> bool:
+    return _app is not None
+
+
+async def send_test_push(token: str, recipient: uuid.UUID) -> bool:
+    if _app is None:
+        return False
+    message = messaging.Message(token=token, data={
+        "event_type": "test", "recipient_id": str(recipient), "message_id": str(uuid.uuid4()),
+    }, android=messaging.AndroidConfig(priority="high", ttl=timedelta(minutes=5)))
+    try:
+        async with _sender_limit:
+            await asyncio.to_thread(messaging.send, message, app=_app)
+        return True
+    except Exception:
+        logger.exception("Test push delivery failed")
+        return False
 
 
 async def send_push(chat_id: uuid.UUID, payload: dict):
@@ -65,6 +91,9 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                 result = await asyncio.to_thread(
                     messaging.send_each, messages, app=_app
                 )
+                for response in result.responses:
+                    if not response.success:
+                        logger.warning("Firebase rejected a push: %s", type(response.exception).__name__)
                 invalid = [
                     device.token_hash
                     for device, response in zip(batch, result.responses)
@@ -78,3 +107,4 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                         await db.commit()
     except Exception:
         logger.exception("Push notification delivery failed")
+

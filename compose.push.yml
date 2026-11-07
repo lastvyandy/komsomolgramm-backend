@@ -1,0 +1,12 @@
+# Add this overlay to your existing VPS/HTTPS compose files.
+services:
+  komsomol_api:
+    environment:
+      FIREBASE_CREDENTIALS: /run/secrets/firebase-admin.json
+    volumes:
+      - type: bind
+        source: /opt/komsomolgram-secrets/firebase-admin.json
+        target: /run/secrets/firebase-admin.json
+        read_only: true
+        bind:
+          create_host_path: false
