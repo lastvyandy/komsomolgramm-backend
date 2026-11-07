@@ -9,7 +9,7 @@ from firebase_admin import credentials, messaging
 from sqlalchemy import delete, select
 
 from app.db.session import async_session_maker
-from app.models.models import PushDevice, SovietMember
+from app.models.models import PushDevice, SovietMember, Soviet
 
 logger = logging.getLogger(__name__)
 _sender_limit = asyncio.Semaphore(2)
@@ -67,10 +67,19 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                     .where(SovietMember.soviet_id == chat_id,
                            SovietMember.comrade_id != sender_id)
                 )).all()
+                chat = (await db.execute(
+                    select(Soviet.name, Soviet.soviet_type).where(Soviet.id == chat_id)
+                )).one_or_none()
+                chat_title = (chat.name or "") if chat else ""
+                is_group = bool(chat and chat.soviet_type.value != "direct")
             for start in range(0, len(devices), 500):
                 batch = devices[start:start + 500]
-                # Each device receives only identifiers. Android applies local mute
-                # preferences and shows a generic preview on the lock screen.
+                # Keep the payload small while providing enough data for Android's
+                # MessagingStyle notification and its inline reply action.
+                attachment = payload.get("attachment") or {}
+                message_kind = str(attachment.get("mime_type", "")).split("/", 1)[0]
+                preview = str(payload.get("content", ""))[:350]
+                sent_at = str(payload.get("created_at", ""))
                 messages = [
                     messaging.Message(
                         token=device.token,
@@ -79,7 +88,12 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                             "chat_id": str(chat_id),
                             "message_id": message_id,
                             "sender_id": str(sender_id),
-                            "sender_callsign": payload.get("sender_callsign", ""),
+                            "sender_callsign": str(payload.get("sender_callsign", ""))[:100],
+                            "message_preview": preview,
+                            "message_kind": message_kind,
+                            "chat_title": chat_title[:100],
+                            "is_group": str(is_group).lower(),
+                            "created_at": sent_at,
                             "event_type": event_type,
                         },
                         android=messaging.AndroidConfig(

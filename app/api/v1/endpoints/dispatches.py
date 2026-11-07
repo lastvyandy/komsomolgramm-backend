@@ -142,6 +142,44 @@ async def mark_dispatch_read(
     return Response(status_code=204)
 
 
+@router.post("/{soviet_id}/messages", response_model=DispatchOut, status_code=201)
+async def create_text_dispatch(
+    soviet_id: uuid.UUID,
+    payload: DispatchCreate,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Create a text dispatch for quick replies and other authenticated clients."""
+    await require_membership(db, soviet_id, current_comrade)
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(422, "Message cannot be empty")
+
+    message = Dispatch(soviet_id=soviet_id, sender=current_comrade, content=content)
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+    result = DispatchOut.model_validate(message)
+    event = {
+        "type": "dispatch",
+        "id": str(message.id),
+        "soviet_id": str(soviet_id),
+        "sender_id": str(current_comrade.id),
+        "sender_username": current_comrade.username,
+        "sender_callsign": current_comrade.callsign,
+        "bubble_color": current_comrade.bubble_color,
+        "content": content,
+        "created_at": message.created_at.isoformat(),
+        "reply_to_id": None,
+        "reply": None,
+    }
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, event)
+    except Exception:
+        logger.exception("Message %s saved but live delivery failed", message.id)
+    return result
+
+
 @router.patch("/{soviet_id}/messages/{dispatch_id}", response_model=DispatchOut)
 async def edit_dispatch(
     soviet_id: uuid.UUID,
