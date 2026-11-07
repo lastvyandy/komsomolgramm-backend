@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, func, select, tuple_, update
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden, AttachmentRecipient, utc_now
+from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden, AttachmentRecipient, DispatchChoice, utc_now
 from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut, ReactionCount, ForwardMessages, DeleteMessages
 from app.api.v1.endpoints.ws import get_socket_manager
 from app.services.replies import reply_summaries, require_reply
@@ -16,6 +17,109 @@ from app.services.replies import reply_summaries, require_reply
 from app.services.media_relay import admit_media, register_recipients
 
 router = APIRouter()
+
+from app.schemas.rich_message import RichCreate, ChoiceIn
+
+async def rich_message(db, chat_id, dispatch_id, current):
+    await require_membership(db, chat_id, current)
+    message = await db.scalar(select(Dispatch).where(
+        Dispatch.id == dispatch_id, Dispatch.soviet_id == chat_id,
+        Dispatch.is_purged.is_(False), visible_to(current.id)))
+    if message is None or not message.rich:
+        raise HTTPException(404, "Rich message not found")
+    return message
+
+@router.post("/{soviet_id}/rich", response_model=DispatchOut, status_code=201)
+async def send_rich(soviet_id: uuid.UUID, payload: RichCreate,
+                    current: Comrade = Depends(get_current_comrade),
+                    db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    try:
+        identifier = uuid.UUID(payload.client_id)
+        reply_to = uuid.UUID(payload.reply_to_id) if payload.reply_to_id else None
+    except ValueError:
+        raise HTTPException(422, "Invalid message identifier")
+    existing = await db.scalar(select(Dispatch).options(
+        selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(Dispatch.id == identifier))
+    if existing is not None:
+        if existing.soviet_id != soviet_id or existing.sender_id != current.id:
+            raise HTTPException(409, "Identifier already used")
+        return DispatchOut.model_validate(existing)
+    reply_id, reply = await require_reply(db, soviet_id, reply_to)
+    data = payload.rich.model_dump(mode="json")
+    kind = data["kind"]
+    if kind == "location":
+        text = f"📍 {data['label']}\nhttps://yandex.ru/maps/?pt={data['longitude']},{data['latitude']}&z=16"
+    elif kind == "contact":
+        text = f"👤 {data['name']}\n{data['phone']}"
+    elif kind == "poll":
+        text = "📊 " + data["question"] + "\n" + "\n".join(data["options"])
+    else:
+        text = f"📅 {data['title']}\n{data['starts_at']}\n{data['place']}"
+    dispatch = Dispatch(id=identifier, soviet_id=soviet_id, sender=current,
+                        content=text, rich=data, reply_to_id=reply_id)
+    db.add(dispatch)
+    await db.flush()
+    # Explicit relationships avoid asynchronous lazy loading during response serialization.
+    dispatch.attachment = None
+    dispatch.forwarded = None
+    result = DispatchOut.model_validate(dispatch).model_copy(update={
+        "reply": ReplyOut.model_validate(reply) if reply else None})
+    await db.commit()
+    event = result.model_dump(mode="json", exclude={"sender", "is_purged"})
+    event.update(type="dispatch", sender_id=str(current.id), sender_callsign=current.callsign,
+                 sender_username=current.username, bubble_color=current.bubble_color)
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, event)
+    except Exception:
+        logger.exception("Rich message saved but live delivery failed")
+    return result
+
+@router.get("/{soviet_id}/rich/{dispatch_id}/responses")
+async def rich_responses(soviet_id: uuid.UUID, dispatch_id: uuid.UUID,
+                         current: Comrade = Depends(get_current_comrade),
+                         db: AsyncSession = Depends(get_async_db)):
+    message = await rich_message(db, soviet_id, dispatch_id, current)
+    kind = message.rich["kind"]
+    if kind not in ("poll", "event"):
+        raise HTTPException(422, "Message does not accept responses")
+    rows = (await db.scalars(select(DispatchChoice).join(
+        SovietMember, (SovietMember.comrade_id == DispatchChoice.comrade_id) &
+                      (SovietMember.soviet_id == soviet_id)).where(
+        DispatchChoice.dispatch_id == dispatch_id))).all()
+    count = len(message.rich["options"]) if kind == "poll" else 3
+    totals = [0] * count
+    mine = []
+    voters = 0
+    for row in rows:
+        choices = sorted({v for v in row.choices if 0 <= v < count})
+        if choices:
+            voters += 1
+        for value in choices:
+            totals[value] += 1
+        if row.comrade_id == current.id:
+            mine = choices
+    return {"counts": totals, "my_choices": mine, "participants": voters}
+
+@router.put("/{soviet_id}/rich/{dispatch_id}/responses")
+async def respond_rich(soviet_id: uuid.UUID, dispatch_id: uuid.UUID, payload: ChoiceIn,
+                       current: Comrade = Depends(get_current_comrade),
+                       db: AsyncSession = Depends(get_async_db)):
+    message = await rich_message(db, soviet_id, dispatch_id, current)
+    data = message.rich
+    count = len(data["options"]) if data["kind"] == "poll" else 3 if data["kind"] == "event" else 0
+    choices = sorted(set(payload.choices))
+    if not count or any(value < 0 or value >= count for value in choices):
+        raise HTTPException(422, "Invalid response")
+    if (data["kind"] == "event" or not data.get("multiple", False)) and len(choices) > 1:
+        raise HTTPException(422, "Only one response allowed")
+    statement = insert(DispatchChoice).values(
+        dispatch_id=dispatch_id, comrade_id=current.id, choices=choices)
+    await db.execute(statement.on_conflict_do_update(
+        index_elements=[DispatchChoice.dispatch_id, DispatchChoice.comrade_id],
+        set_={"choices": choices}))
+    await db.commit()
+    return await rich_responses(soviet_id, dispatch_id, current, db)
 
 @router.get("/pending-media")
 async def pending_media(include_audio: bool = True,
@@ -258,6 +362,8 @@ async def edit_dispatch(
         raise HTTPException(404, "Message not found")
     if dispatch.sender_id != current_comrade.id:
         raise HTTPException(403, "Only the author can edit this message")
+    if dispatch.rich is not None:
+        raise HTTPException(422, "Structured messages cannot be edited as plain text")
     has_attachment = await db.scalar(
         select(DispatchAttachment.dispatch_id).where(DispatchAttachment.dispatch_id == dispatch_id)
     )
@@ -328,6 +434,12 @@ ATTACHMENT_TYPES = {
     "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif",
     "video/mp4", "video/webm", "video/3gpp", "video/quicktime",
     "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/opus",
+    "application/pdf", "application/zip", "application/octet-stream",
+    "application/vnd.android.package-archive", "text/plain", "text/csv",
+    "application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "audio/wav", "audio/x-wav", "audio/flac", "audio/webm", "audio/3gpp",
 }
 logger = logging.getLogger(__name__)
@@ -371,7 +483,8 @@ async def send_attachment(
             return DispatchOut.model_validate(existing)
     reply_id, reply = await require_reply(db, soviet_id, reply_to_id)
     mime_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
-    if mime_type not in ATTACHMENT_TYPES:
+    document_type = re.fullmatch(r"(?:application|text)/[a-z0-9][a-z0-9.+_-]{0,66}", mime_type)
+    if mime_type not in ATTACHMENT_TYPES and not document_type:
         raise HTTPException(415, "Unsupported attachment type")
     data = bytearray()
     async for chunk in request.stream():
@@ -399,7 +512,7 @@ async def send_attachment(
     dispatch = Dispatch(
         id=client_id or uuid.uuid4(),
         soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id, forwarded=forwarded,
-        content="Sticker" if is_sticker else {"image": "Фото", "video": "Видео", "audio": "Аудио"}[mime_type.split("/")[0]],
+        content="Sticker" if is_sticker else {"image": "Фото", "video": "Видео", "audio": "Аудио"}.get(mime_type.split("/")[0], "Файл"),
     )
     db.add(dispatch)
     await db.flush()
@@ -521,7 +634,7 @@ async def forward_messages(soviet_id: uuid.UUID, payload: ForwardMessages,
         if original.attachment is not None:
             raise HTTPException(409, "Forward media from its local device copy")
         copy = Dispatch(soviet_id=payload.target_chat_id, sender=current,
-            content=original.content, attachment=attachment,
+            content=original.content, rich=original.rich, attachment=attachment,
             forwarded=DispatchForward(sender_name=original.forwarded.sender_name if original.forwarded
                 else original.sender.callsign if original.sender else "Camarada"))
         db.add(copy)

@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import date, datetime, timezone, timedelta
-from sqlalchemy import String, Date, DateTime, ForeignKey, Enum, Text, LargeBinary
+from sqlalchemy import String, Date, DateTime, ForeignKey, Enum, Text, LargeBinary, JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
@@ -97,6 +97,7 @@ class Dispatch(Base):
     sender_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("comrades.id", ondelete="SET NULL"), index=True, nullable=True)
     reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dispatches.id", ondelete="SET NULL"), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    rich: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_purged: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
@@ -174,3 +175,10 @@ class AttachmentRecipient(Base):
     dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatch_attachments.dispatch_id", ondelete="CASCADE"), primary_key=True)
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
     downloaded: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+
+
+class DispatchChoice(Base):
+    __tablename__ = "dispatch_choices"
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
+    comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    choices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)

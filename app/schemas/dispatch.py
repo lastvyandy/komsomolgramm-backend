@@ -46,6 +46,7 @@ class DispatchOut(BaseModel):
     reactions: list[ReactionCount] = Field(default_factory=list)
     my_reaction: str | None = None
     forwarded: ForwardOut | None = None
+    rich: dict | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
