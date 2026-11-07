@@ -73,6 +73,7 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
                     continue
                 await manager.publish_dispatch(soviet_id, {
                     "type": "buzz",
+                    "id": str(uuid.uuid4()),
                     "sender_id": str(comrade_id),
                     "sender_callsign": sender_callsign,
                 })
