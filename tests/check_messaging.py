@@ -53,6 +53,18 @@ async def setup():
   await db.commit()
 async def http_checks():
  async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as c:
+  # Profile galleries preserve photos and restrict primary changes to the owner.
+  photo_headers={**headers(0),'Content-Type':'image/jpeg'}
+  for image in [bytes.fromhex('ffd8ff')+b'first'+bytes.fromhex('ffd9'),bytes.fromhex('ffd8ff')+b'second'+bytes.fromhex('ffd9')]:
+   result=await c.put('/auth/me/avatar',headers=photo_headers,content=image);assert result.status_code==204,result.text
+  photos=(await c.get('/auth/photos/'+str(ids[0]),headers=headers(1))).json();assert len(photos)==2,photos
+  photo_id=photos[-1]['id']
+  original=await c.get(f'/auth/photos/{ids[0]}/{photo_id}',headers=headers(1));assert original.status_code==200
+  assert (await c.put(f'/auth/me/photos/{photo_id}/primary',headers=headers(1))).status_code==404
+  assert (await c.put(f'/auth/me/photos/{photo_id}/primary',headers=headers(0))).status_code==204
+  assert (await c.get('/auth/avatar/'+str(ids[0]),headers=headers(1))).content==original.content
+  assert (await c.delete('/auth/me/avatar',headers=headers(0))).status_code==204
+  assert len((await c.get('/auth/photos/'+str(ids[0]),headers=headers(0))).json())==1
   # Contacts remain per account and save is idempotent.
   for _ in range(2):assert (await c.put('/auth/contacts/'+str(ids[1]),headers=headers(0))).status_code==204
   assert len((await c.get('/auth/contacts',headers=headers(0))).json())==1

@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.db.session import get_async_db
-from app.models.models import Comrade, ComradeAvatar, PushDevice, Contact, ComradePresence
+from app.models.models import Comrade, ComradeAvatar, ProfilePhoto, PushDevice, Contact, ComradePresence
 from app.schemas.comrade import ComradeCreate, ComradeOut, Token
 from app.api.deps import get_current_comrade
 
@@ -189,6 +189,15 @@ async def set_avatar(
         image.extend(chunk)
     if not image.startswith(b"\xff\xd8\xff") or not image.endswith(b"\xff\xd9"):
         raise HTTPException(422, "Invalid JPEG image")
+    existing_photos = (await db.scalars(select(ProfilePhoto.id).where(ProfilePhoto.comrade_id == current.id))).all()
+    if len(existing_photos) >= 20:
+        raise HTTPException(409, "At most 20 profile photos")
+    if not existing_photos:
+        old = await db.scalar(select(ComradeAvatar.image).where(ComradeAvatar.comrade_id == current.id))
+        if old:
+            db.add(ProfilePhoto(comrade_id=current.id, image=old))
+            await db.flush()
+    db.add(ProfilePhoto(comrade_id=current.id, image=bytes(image)))
     statement = insert(ComradeAvatar).values(comrade_id=current.id, image=bytes(image))
     await db.execute(statement.on_conflict_do_update(
         index_elements=[ComradeAvatar.comrade_id], set_={"image": statement.excluded.image}
@@ -202,7 +211,14 @@ async def remove_avatar(
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
+    primary = await db.scalar(select(ComradeAvatar.image).where(ComradeAvatar.comrade_id == current.id))
+    photo_id = await db.scalar(select(ProfilePhoto.id).where(ProfilePhoto.comrade_id == current.id, ProfilePhoto.image == primary).order_by(ProfilePhoto.created_at.desc()).limit(1))
+    if photo_id:
+        await db.execute(delete(ProfilePhoto).where(ProfilePhoto.id == photo_id))
+    next_image = await db.scalar(select(ProfilePhoto.image).where(ProfilePhoto.comrade_id == current.id).order_by(ProfilePhoto.created_at.desc(), ProfilePhoto.id.desc()).limit(1))
     await db.execute(delete(ComradeAvatar).where(ComradeAvatar.comrade_id == current.id))
+    if next_image:
+        db.add(ComradeAvatar(comrade_id=current.id, image=next_image))
     await db.commit()
     return Response(status_code=204)
 
@@ -313,3 +329,30 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
         return {"online": None, "last_seen": None, "hidden": True}
     count = await get_redis_client().zcount(f"presence:{person_id}", datetime.now(timezone.utc).timestamp(), "+inf")
     return {"online": bool(count), "last_seen": row.last_seen if row else None, "hidden": False}
+
+
+@router.get("/photos/{person_id}")
+async def profile_photos(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    if not await db.scalar(select(Comrade.id).where(Comrade.id == person_id, Comrade.is_active.is_(True))):
+        raise HTTPException(404, "User not found")
+    rows = (await db.execute(select(ProfilePhoto.id, ProfilePhoto.created_at).where(ProfilePhoto.comrade_id == person_id).order_by(ProfilePhoto.created_at.desc(), ProfilePhoto.id.desc()))).all()
+    return [{"id": str(row.id)} for row in rows]
+
+
+@router.get("/photos/{person_id}/{photo_id}")
+async def profile_photo(person_id: uuid.UUID, photo_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    image = await db.scalar(select(ProfilePhoto.image).join(Comrade, Comrade.id == ProfilePhoto.comrade_id).where(ProfilePhoto.comrade_id == person_id, ProfilePhoto.id == photo_id, Comrade.is_active.is_(True)))
+    if image is None:
+        raise HTTPException(404, "Photo not found")
+    return Response(image, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+
+
+@router.put("/me/photos/{photo_id}/primary", status_code=204)
+async def primary_photo(photo_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    image = await db.scalar(select(ProfilePhoto.image).where(ProfilePhoto.id == photo_id, ProfilePhoto.comrade_id == current.id))
+    if image is None:
+        raise HTTPException(404, "Photo not found")
+    statement = insert(ComradeAvatar).values(comrade_id=current.id, image=image)
+    await db.execute(statement.on_conflict_do_update(index_elements=[ComradeAvatar.comrade_id], set_={"image": statement.excluded.image}))
+    await db.commit()
+    return Response(status_code=204)
