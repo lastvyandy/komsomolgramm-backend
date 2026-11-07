@@ -21,6 +21,11 @@ class ReplyOut(BaseModel):
     media_type: str | None = None
 
 
+class ReactionCount(BaseModel):
+    stamp: str
+    count: int
+
+
 class DispatchOut(BaseModel):
     id: uuid.UUID
     soviet_id: uuid.UUID
@@ -31,6 +36,8 @@ class DispatchOut(BaseModel):
     attachment: AttachmentOut | None = None
     reply_to_id: uuid.UUID | None = None
     reply: ReplyOut | None = None
+    reactions: list[ReactionCount] = Field(default_factory=list)
+    my_reaction: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
