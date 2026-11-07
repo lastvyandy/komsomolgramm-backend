@@ -1,4 +1,5 @@
 import uuid
+import hashlib
 
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -9,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.db.session import get_async_db
-from app.models.models import Comrade, ComradeAvatar
+from app.models.models import Comrade, ComradeAvatar, PushDevice
 from app.schemas.comrade import ComradeCreate, ComradeOut, Token
 from app.api.deps import get_current_comrade
 
@@ -109,6 +110,43 @@ async def update_bubble_color(
     await db.commit()
     await db.refresh(current)
     return current
+
+
+class PushTokenUpdate(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+
+
+@router.put("/me/push-token", status_code=204)
+async def register_push_device(
+    payload: PushTokenUpdate,
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    statement = insert(PushDevice).values(
+        token_hash=hashlib.sha256(payload.token.encode()).hexdigest(),
+        comrade_id=current.id,
+        token=payload.token,
+    )
+    await db.execute(statement.on_conflict_do_update(
+        index_elements=[PushDevice.token_hash],
+        set_={"comrade_id": current.id, "token": payload.token},
+    ))
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/me/push-token", status_code=204)
+async def unregister_push_device(
+    payload: PushTokenUpdate,
+    current: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    await db.execute(delete(PushDevice).where(
+        PushDevice.token_hash == hashlib.sha256(payload.token.encode()).hexdigest(),
+        PushDevice.comrade_id == current.id,
+    ))
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/search", response_model=list[ComradeOut])

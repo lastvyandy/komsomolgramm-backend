@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.services.push_notifications import configure_push
 from app.core.redis import get_redis_client
 from app.db.session import engine
 from app.models.models import Base
@@ -17,6 +18,8 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bubble_color VARCHAR(16)")
+
+    configure_push()
 
     # 2. Inicializar SovietSocketManager y tarea de Redis Pub/Sub
     redis_client = get_redis_client()
@@ -34,6 +37,10 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
+    for task in manager.push_tasks:
+        task.cancel()
+    if manager.push_tasks:
+        await asyncio.gather(*list(manager.push_tasks), return_exceptions=True)
     await redis_client.aclose()
     await engine.dispose()
 

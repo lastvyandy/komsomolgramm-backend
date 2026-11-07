@@ -1,4 +1,5 @@
 import asyncio
+from app.services.push_notifications import send_push
 import json
 import logging
 import uuid
@@ -13,6 +14,7 @@ class SovietSocketManager:
         # Mapeo en memoria local: soviet_id -> set de WebSockets locales
         self.local_connections: Dict[uuid.UUID, Set[WebSocket]] = {}
         self.redis = redis_client
+        self.push_tasks: set[asyncio.Task] = set()
         self._listener_task: asyncio.Task | None = None
 
     async def connect(self, soviet_id: uuid.UUID, websocket: WebSocket):
@@ -49,6 +51,10 @@ class SovietSocketManager:
         """Publica el despacho en el canal Redis del Soviet para todas las réplicas."""
         channel = f"soviet:{str(soviet_id)}"
         await self.redis.publish(channel, json.dumps(payload))
+        if payload.get("type") == "dispatch" and payload.get("sender_id"):
+            task = asyncio.create_task(send_push(soviet_id, payload))
+            self.push_tasks.add(task)
+            task.add_done_callback(self.push_tasks.discard)
 
     async def start_listener(self):
         """Escucha en segundo plano todos los canales de soviets en Redis."""

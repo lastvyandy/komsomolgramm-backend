@@ -33,6 +33,16 @@ class Comrade(Base):
 
     memberships: Mapped[list["SovietMember"]] = relationship(back_populates="comrade")
 
+class PushDevice(Base):
+    __tablename__ = "push_devices"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    comrade_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("comrades.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class ComradeAvatar(Base):
     __tablename__ = "comrade_avatars"
 
