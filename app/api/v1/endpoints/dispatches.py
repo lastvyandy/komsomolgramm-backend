@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction
-from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut, ReactionCount
+from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden
+from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut, ReactionCount, ForwardMessages, DeleteMessages
 from app.api.v1.endpoints.ws import get_socket_manager
 from app.services.replies import reply_summaries, require_reply
 
@@ -38,7 +38,7 @@ async def get_soviet_dispatches(
         )
 
     # 2. Consultar despachos ordenados por fecha ascendente para el cliente móvil
-    conditions = [Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False)]
+    conditions = [Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False), visible_to(current_comrade.id)]
     if before_id is not None:
         cursor = await db.scalar(select(Dispatch).where(
             Dispatch.id == before_id,
@@ -248,9 +248,9 @@ async def require_membership(db: AsyncSession, soviet_id: uuid.UUID, comrade: Co
         raise HTTPException(403, "Chat membership required")
 
 
-def attachment_query(soviet_id: uuid.UUID):
+def attachment_query(soviet_id: uuid.UUID, viewer_id: uuid.UUID):
     return select(DispatchAttachment).join(Dispatch).where(
-        Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False),
+        Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False), visible_to(viewer_id),
     )
 
 
@@ -278,7 +278,7 @@ async def send_attachment(
 
     attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data))
     dispatch = Dispatch(
-        soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id,
+        soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id, forwarded=None,
         content={"image": "Фото", "video": "Видео", "audio": "Аудио"}[mime_type.split("/")[0]],
     )
     db.add(dispatch)
@@ -315,7 +315,7 @@ async def list_attachments(
         "gif": mime_type == "image/gif",
         "audio": mime_type.startswith("audio/"),
     }
-    statement = attachment_query(soviet_id).where(filters[kind]).order_by(
+    statement = attachment_query(soviet_id, current_comrade.id).where(filters[kind]).order_by(
         Dispatch.created_at.desc(), Dispatch.id.desc(),
     ).offset(offset).limit(limit)
     return (await db.scalars(statement)).all()
@@ -330,7 +330,7 @@ async def download_attachment(
 ):
     await require_membership(db, soviet_id, current_comrade)
     attachment = (await db.execute(
-        attachment_query(soviet_id).with_only_columns(
+        attachment_query(soviet_id, current_comrade.id).with_only_columns(
             DispatchAttachment.data, DispatchAttachment.mime_type,
         ).where(DispatchAttachment.dispatch_id == dispatch_id)
     )).one_or_none()
@@ -357,11 +357,11 @@ async def read_receipts(soviet_id: uuid.UUID, current: Comrade = Depends(get_cur
 @router.get("/{soviet_id}/context/{dispatch_id}", response_model=list[DispatchOut])
 async def reply_context(soviet_id: uuid.UUID, dispatch_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
     await require_membership(db, soviet_id, current)
-    target = await db.scalar(select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False)))
+    target = await db.scalar(select(Dispatch).where(Dispatch.id == dispatch_id, Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False), visible_to(current.id)))
     if target is None:
         raise HTTPException(404, "Message not found")
     base = select(Dispatch).options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(
-        Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False))
+        Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False), visible_to(current.id))
     before = (await db.scalars(base.where(tuple_(Dispatch.created_at, Dispatch.id) <= (target.created_at, target.id))
         .order_by(Dispatch.created_at.desc(), Dispatch.id.desc()).limit(26))).all()
     after = (await db.scalars(base.where(tuple_(Dispatch.created_at, Dispatch.id) > (target.created_at, target.id))
@@ -369,3 +369,83 @@ async def reply_context(soviet_id: uuid.UUID, dispatch_id: uuid.UUID, current: C
     messages = list(reversed(before)) + list(after)
     replies = await reply_summaries(db, soviet_id, {m.reply_to_id for m in messages if m.reply_to_id})
     return [DispatchOut.model_validate(m).model_copy(update={"reply": ReplyOut.model_validate(replies[m.reply_to_id]) if m.reply_to_id in replies else None}) for m in messages]
+
+
+
+def visible_to(person_id: uuid.UUID):
+    return ~select(DispatchHidden.dispatch_id).where(
+        DispatchHidden.dispatch_id == Dispatch.id, DispatchHidden.comrade_id == person_id,
+    ).exists()
+
+
+@router.post("/{soviet_id}/forward", response_model=list[DispatchOut], status_code=201)
+async def forward_messages(soviet_id: uuid.UUID, payload: ForwardMessages,
+                           current: Comrade = Depends(get_current_comrade),
+                           db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    await require_membership(db, payload.target_chat_id, current)
+    ids = set(payload.message_ids)
+    originals = (await db.scalars(select(Dispatch).options(
+        selectinload(Dispatch.sender), selectinload(Dispatch.attachment),
+    ).where(Dispatch.soviet_id == soviet_id, Dispatch.id.in_(ids),
+            Dispatch.is_purged.is_(False), visible_to(current.id))
+      .order_by(Dispatch.created_at, Dispatch.id))).all()
+    if len(originals) != len(ids):
+        raise HTTPException(404, "One or more source messages are unavailable")
+    copies = []
+    for original in originals:
+        attachment = None
+        if original.attachment is not None:
+            data = await db.scalar(select(DispatchAttachment.data).where(
+                DispatchAttachment.dispatch_id == original.id))
+            attachment = DispatchAttachment(name=original.attachment.name,
+                mime_type=original.attachment.mime_type, data=data)
+        copy = Dispatch(soviet_id=payload.target_chat_id, sender=current,
+            content=original.content, attachment=attachment,
+            forwarded=DispatchForward(sender_name=original.forwarded.sender_name if original.forwarded
+                else original.sender.callsign if original.sender else "Camarada"))
+        db.add(copy)
+        copies.append(copy)
+    await db.flush()
+    results = [DispatchOut.model_validate(message) for message in copies]
+    await db.commit()
+    for result in results:
+        event = result.model_dump(mode="json", exclude={"sender", "is_purged"})
+        event.update(type="dispatch", sender_id=str(current.id), sender_callsign=current.callsign,
+            sender_username=current.username, bubble_color=current.bubble_color)
+        try:
+            await get_socket_manager().publish_dispatch(payload.target_chat_id, event)
+        except Exception:
+            logger.exception("Forward stored but live delivery failed")
+    return results
+
+
+@router.post("/{soviet_id}/delete-messages", status_code=204)
+async def delete_messages(soviet_id: uuid.UUID, payload: DeleteMessages,
+                          current: Comrade = Depends(get_current_comrade),
+                          db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    ids = set(payload.message_ids)
+    messages = (await db.scalars(select(Dispatch).where(Dispatch.soviet_id == soviet_id,
+        Dispatch.id.in_(ids), Dispatch.is_purged.is_(False)))).all()
+    if len(messages) != len(ids):
+        raise HTTPException(404, "One or more messages are unavailable")
+    if payload.for_everyone:
+        if any(message.sender_id != current.id for message in messages):
+            raise HTTPException(403, "Only your own messages can be deleted for everyone")
+        await db.execute(delete(DispatchAttachment).where(DispatchAttachment.dispatch_id.in_(ids)))
+        for message in messages:
+            message.is_purged = True
+    else:
+        await db.execute(insert(DispatchHidden).values([
+            {"dispatch_id": message_id, "comrade_id": current.id} for message_id in ids
+        ]).on_conflict_do_nothing())
+    await db.commit()
+    if payload.for_everyone:
+        for message_id in ids:
+            try:
+                await get_socket_manager().publish_dispatch(soviet_id, {
+                    "type": "delete_dispatch", "id": str(message_id), "sender_id": str(current.id)})
+            except Exception:
+                logger.exception("Batch deletion stored but live delivery failed")
+    return Response(status_code=204)

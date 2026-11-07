@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietReadCursor, SovietType, ComradeRole
+from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietReadCursor, SovietType, ComradeRole, DispatchHidden
 from app.schemas.soviet import ChatPreview, SovietCreate, SovietMembersAdd, SovietOut
 
 router = APIRouter()
@@ -82,7 +82,9 @@ async def list_my_soviets(
         )
         .select_from(Dispatch)
         .outerjoin(Comrade, Dispatch.sender_id == Comrade.id)
-        .where(Dispatch.soviet_id == Soviet.id, Dispatch.is_purged.is_(False))
+        .where(Dispatch.soviet_id == Soviet.id, Dispatch.is_purged.is_(False),
+            ~select(DispatchHidden.dispatch_id).where(DispatchHidden.dispatch_id == Dispatch.id,
+                DispatchHidden.comrade_id == current_comrade.id).exists())
         .order_by(Dispatch.created_at.desc(), Dispatch.id.desc())
         .limit(1)
         .correlate(Soviet)
@@ -94,6 +96,8 @@ async def list_my_soviets(
         .where(
             Dispatch.soviet_id == Soviet.id,
             Dispatch.is_purged.is_(False),
+            ~select(DispatchHidden.dispatch_id).where(DispatchHidden.dispatch_id == Dispatch.id,
+                DispatchHidden.comrade_id == current_comrade.id).exists(),
             Dispatch.sender_id.is_distinct_from(current_comrade.id),
             Dispatch.created_at >= SovietMember.joined_at,
             or_(
@@ -242,12 +246,6 @@ async def get_or_create_direct_soviet(
     db: AsyncSession = Depends(get_async_db)
 ):
     """Inicia o recupera un Encuentro Clandestino (chat 1 a 1) con otro camarada."""
-    if target_comrade_id == current_comrade.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Un camarada no puede mantener un encuentro clandestino consigo mismo."
-        )
-
     # 1. Comprobar que el camarada destino exista y esté activo
     target_res = await db.execute(
         select(Comrade).where(Comrade.id == target_comrade_id, Comrade.is_active == True)
@@ -273,10 +271,10 @@ async def get_or_create_direct_soviet(
         )
         .group_by(SovietMember.soviet_id)
         .having(
-            func.count(SovietMember.comrade_id) == 2,
+            func.count(SovietMember.comrade_id) == (1 if target_comrade_id == current_comrade.id else 2),
             func.count(func.distinct(SovietMember.comrade_id)).filter(
                 SovietMember.comrade_id.in_([current_comrade.id, target_comrade_id])
-            ) == 2,
+            ) == (1 if target_comrade_id == current_comrade.id else 2),
         )
     )
     existing_soviet_id = (await db.execute(find_stmt.order_by(SovietMember.soviet_id))).scalars().first()
@@ -307,7 +305,7 @@ async def get_or_create_direct_soviet(
         comrade_id=target_comrade_id,
         role=ComradeRole.COMRADE
     )
-    db.add_all([member_self, member_target])
+    db.add_all([member_self] if target_comrade_id == current_comrade.id else [member_self, member_target])
     await db.commit()
 
     # Recargar con relaciones
@@ -317,3 +315,4 @@ async def get_or_create_direct_soviet(
         .where(Soviet.id == new_direct.id)
     )
     return (await db.execute(stmt_reload)).scalar_one()
+

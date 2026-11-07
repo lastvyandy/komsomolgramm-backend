@@ -26,6 +26,11 @@ class ReactionCount(BaseModel):
     count: int
 
 
+class ForwardOut(BaseModel):
+    sender_name: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DispatchOut(BaseModel):
     id: uuid.UUID
     soviet_id: uuid.UUID
@@ -38,6 +43,20 @@ class DispatchOut(BaseModel):
     reply: ReplyOut | None = None
     reactions: list[ReactionCount] = Field(default_factory=list)
     my_reaction: str | None = None
+    forwarded: ForwardOut | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
+
+
+
+class MessageBatch(BaseModel):
+    message_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+class ForwardMessages(MessageBatch):
+    target_chat_id: uuid.UUID
+
+
+class DeleteMessages(MessageBatch):
+    for_everyone: bool = False

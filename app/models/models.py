@@ -99,6 +99,7 @@ class Dispatch(Base):
     soviet: Mapped["Soviet"] = relationship(back_populates="dispatches")
     sender: Mapped["Comrade"] = relationship()
     attachment: Mapped["DispatchAttachment | None"] = relationship()
+    forwarded: Mapped["DispatchForward | None"] = relationship(lazy="selectin")
 
 
 class DispatchReaction(Base):
@@ -146,3 +147,16 @@ class ProfilePhoto(Base):
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), index=True)
     image: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+
+class DispatchForward(Base):
+    __tablename__ = "dispatch_forwards"
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
+    sender_name: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
+class DispatchHidden(Base):
+    __tablename__ = "dispatch_hidden"
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
+    comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
