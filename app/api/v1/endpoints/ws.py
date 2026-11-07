@@ -77,7 +77,6 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
                     "sender_callsign": sender_callsign,
                 })
                 last_buzz = now
-                await websocket.send_json({"type": "buzz_sent"})
                 continue
             if event_type == "reaction":
                 try:
