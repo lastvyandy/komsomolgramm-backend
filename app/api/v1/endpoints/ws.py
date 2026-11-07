@@ -124,6 +124,7 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
                     "type": "reaction",
                     "dispatch_id": str(target_id),
                     "sender_id": str(comrade_id),
+                    "stamp": active_reaction or "",
                     "my_reaction": active_reaction,
                     "reactions": reaction_summary,
                 })
