@@ -1,12 +1,12 @@
 import time
 import uuid
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.core.security import decode_access_token
 from app.db.session import async_session_maker
-from app.models.models import Comrade, SovietMember, Dispatch
+from app.models.models import Comrade, SovietMember, Dispatch, DispatchReaction
 from app.services.socket_manager import SovietSocketManager
 from app.services.replies import require_reply
 
@@ -82,19 +82,51 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
             if event_type == "reaction":
                 try:
                     target_id = uuid.UUID(str(data.get("dispatch_id")))
-                except ValueError:
+                except (ValueError, TypeError):
                     continue
                 stamp = data.get("stamp")
-                if not isinstance(stamp, str) or not 1 <= len(stamp) <= 64:
+                if not isinstance(stamp, str) or not 1 <= len(stamp) <= 32:
                     continue
+                active_reaction = None
+                reaction_summary = []
                 async with async_session_maker() as db:
                     target = await db.scalar(select(Dispatch.id).where(
-                        Dispatch.id == target_id, Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False)))
-                if target:
-                    await manager.publish_dispatch(soviet_id, {
-                        "type": "reaction", "dispatch_id": str(target_id), "stamp": stamp,
-                        "sender_callsign": sender_callsign,
-                    })
+                        Dispatch.id == target_id,
+                        Dispatch.soviet_id == soviet_id,
+                        Dispatch.is_purged.is_(False),
+                    ))
+                    if target is None:
+                        continue
+                    reaction = await db.get(DispatchReaction, (target_id, comrade_id))
+                    if reaction is not None and reaction.emoji == stamp:
+                        await db.delete(reaction)
+                    elif reaction is not None:
+                        reaction.emoji = stamp
+                        active_reaction = stamp
+                    else:
+                        db.add(DispatchReaction(
+                            dispatch_id=target_id,
+                            comrade_id=comrade_id,
+                            emoji=stamp,
+                        ))
+                        active_reaction = stamp
+                    await db.commit()
+                    rows = (await db.execute(
+                        select(DispatchReaction.emoji, func.count())
+                        .where(DispatchReaction.dispatch_id == target_id)
+                        .group_by(DispatchReaction.emoji)
+                    )).all()
+                    reaction_summary = [
+                        {"stamp": emoji, "count": count}
+                        for emoji, count in sorted(rows, key=lambda row: (-row[1], row[0]))
+                    ]
+                await manager.publish_dispatch(soviet_id, {
+                    "type": "reaction",
+                    "dispatch_id": str(target_id),
+                    "sender_id": str(comrade_id),
+                    "my_reaction": active_reaction,
+                    "reactions": reaction_summary,
+                })
                 continue
             if event_type != "dispatch":
                 continue
