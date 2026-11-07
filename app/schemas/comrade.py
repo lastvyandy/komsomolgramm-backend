@@ -13,6 +13,8 @@ class ComradeOut(ComradeBase):
     id: uuid.UUID
     bubble_color: str | None = None
     bio: str = ""
+    country_code: str | None = None
+    nationality: str | None = None
     is_active: bool
     created_at: datetime
 

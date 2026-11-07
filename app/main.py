@@ -23,7 +23,22 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bio VARCHAR(280) NOT NULL DEFAULT ''")
         await conn.exec_driver_sql("ALTER TABLE comrade_presence ADD COLUMN IF NOT EXISTS show_battery BOOLEAN NOT NULL DEFAULT true")
 
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS country_code VARCHAR(2)")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS nationality VARCHAR(80)")
+        await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ALTER COLUMN data DROP NOT NULL")
+        await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
+        await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ADD COLUMN IF NOT EXISTS is_sticker BOOLEAN NOT NULL DEFAULT false")
+        await conn.exec_driver_sql("CREATE TABLE IF NOT EXISTS applied_data_actions (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())")
+        # Explicitly authorized test-media reset. Runs exactly once on deployment.
+        claimed = await conn.exec_driver_sql("INSERT INTO applied_data_actions(name) VALUES ('test-media-reset-local-delivery-v1') ON CONFLICT DO NOTHING RETURNING name")
+        if claimed.first():
+            await conn.exec_driver_sql("UPDATE dispatch_attachments SET data = NULL, expires_at = now()")
+        await conn.exec_driver_sql("UPDATE dispatch_attachments SET expires_at = now() WHERE expires_at IS NULL")
+        await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ALTER COLUMN expires_at SET NOT NULL")
+
     configure_push()
+    from app.services.media_relay import cleanup_loop
+    media_cleanup = asyncio.create_task(cleanup_loop())
 
     # 2. Inicializar SovietSocketManager y tarea de Redis Pub/Sub
     redis_client = get_redis_client()
@@ -35,6 +50,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # 3. Limpieza al apagar el servidor
+    media_cleanup.cancel()
+    await asyncio.gather(media_cleanup, return_exceptions=True)
     listener_task.cancel()
     try:
         await listener_task

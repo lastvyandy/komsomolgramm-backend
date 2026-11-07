@@ -90,6 +90,8 @@ class ProfileUpdate(BaseModel):
     callsign: str | None = Field(default=None, min_length=2, max_length=100)
     username: str | None = Field(default=None, min_length=3, max_length=50)
     bio: str | None = Field(default=None, max_length=280)
+    country_code: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    nationality: str | None = Field(default=None, max_length=80)
 
 
 @router.patch("/me", response_model=ComradeOut)
@@ -98,7 +100,7 @@ async def update_profile(
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
-    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set):
+    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set - {"country_code", "nationality"}):
         raise HTTPException(422, "Provide non-null profile fields")
     if profile.callsign is not None:
         name = profile.callsign.strip()
@@ -116,6 +118,10 @@ async def update_profile(
         current.username = username
     if profile.bio is not None:
         current.bio = profile.bio.strip()
+    if "country_code" in profile.model_fields_set:
+        current.country_code = profile.country_code
+    if "nationality" in profile.model_fields_set:
+        current.nationality = profile.nationality.strip() if profile.nationality else None
     try:
         await db.commit()
     except IntegrityError:

@@ -77,7 +77,7 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                 # Keep the payload small while providing enough data for Android's
                 # MessagingStyle notification and its inline reply action.
                 attachment = payload.get("attachment") or {}
-                message_kind = str(attachment.get("mime_type", "")).split("/", 1)[0]
+                message_kind = "sticker" if attachment.get("is_sticker") else str(attachment.get("mime_type", "")).split("/", 1)[0]
                 preview = str(payload.get("content", ""))[:350]
                 sent_at = str(payload.get("created_at", ""))
                 messages = [

@@ -10,6 +10,8 @@ class AttachmentOut(BaseModel):
     dispatch_id: uuid.UUID
     name: str
     mime_type: str
+    expires_at: datetime | None = None
+    is_sticker: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

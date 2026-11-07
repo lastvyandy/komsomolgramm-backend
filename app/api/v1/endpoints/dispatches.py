@@ -1,19 +1,75 @@
 import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import delete, func, select, tuple_
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden
+from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden, AttachmentRecipient, utc_now
 from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut, ReactionCount, ForwardMessages, DeleteMessages
 from app.api.v1.endpoints.ws import get_socket_manager
 from app.services.replies import reply_summaries, require_reply
 
+from app.services.media_relay import admit_media, register_recipients
+
 router = APIRouter()
+
+@router.get("/pending-media")
+async def pending_media(include_audio: bool = True,
+                        current: Comrade = Depends(get_current_comrade),
+                        db: AsyncSession = Depends(get_async_db)):
+    statement = select(DispatchAttachment, Dispatch.soviet_id).join(
+        Dispatch, Dispatch.id == DispatchAttachment.dispatch_id).join(
+        AttachmentRecipient, AttachmentRecipient.dispatch_id == Dispatch.id).join(
+        SovietMember, (SovietMember.soviet_id == Dispatch.soviet_id) &
+                      (SovietMember.comrade_id == current.id)).where(
+        AttachmentRecipient.comrade_id == current.id,
+        AttachmentRecipient.downloaded.is_(False),
+        DispatchAttachment.expires_at > utc_now(),
+        DispatchAttachment.data.is_not(None),
+        Dispatch.is_purged.is_(False), visible_to(current.id))
+    if not include_audio:
+        statement = statement.where(~DispatchAttachment.mime_type.startswith("audio/"))
+    rows = (await db.execute(statement.order_by(Dispatch.created_at).limit(100))).all()
+    return [{"chat_id": str(chat_id), "attachment": AttachmentOut.model_validate(attachment)}
+            for attachment, chat_id in rows]
+
+@router.post("/{soviet_id}/attachments/{dispatch_id}/received", status_code=204)
+async def media_received(soviet_id: uuid.UUID, dispatch_id: uuid.UUID,
+                         current: Comrade = Depends(get_current_comrade),
+                         db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    attachment = await db.scalar(select(DispatchAttachment).join(Dispatch).where(
+        DispatchAttachment.dispatch_id == dispatch_id, Dispatch.soviet_id == soviet_id).with_for_update())
+    if attachment is None:
+        raise HTTPException(404, "Attachment not found")
+    recipient = await db.get(AttachmentRecipient, (dispatch_id, current.id))
+    if recipient is not None:
+        recipient.downloaded = True
+        await db.flush()
+        pending = await db.scalar(select(func.count()).select_from(AttachmentRecipient).where(
+            AttachmentRecipient.dispatch_id == dispatch_id, AttachmentRecipient.downloaded.is_(False)))
+        if not pending:
+            attachment.data = None
+    await db.commit()
+    return Response(status_code=204)
+
+@router.get("/{soviet_id}/messages/{dispatch_id}", response_model=DispatchOut)
+async def message_metadata(soviet_id: uuid.UUID, dispatch_id: uuid.UUID,
+                           current: Comrade = Depends(get_current_comrade),
+                           db: AsyncSession = Depends(get_async_db)):
+    await require_membership(db, soviet_id, current)
+    message = await db.scalar(select(Dispatch).options(
+        selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(
+        Dispatch.id == dispatch_id, Dispatch.soviet_id == soviet_id,
+        Dispatch.is_purged.is_(False), visible_to(current.id)))
+    if message is None:
+        raise HTTPException(404, "Message not found")
+    return message
+
 
 @router.get("/{soviet_id}", response_model=list[DispatchOut])
 async def get_soviet_dispatches(
@@ -297,10 +353,22 @@ async def send_attachment(
     request: Request,
     name: str = Query(min_length=1, max_length=180),
     reply_to_id: uuid.UUID | None = Query(default=None),
+    is_sticker: bool = Query(default=False),
+    forward_from_id: uuid.UUID | None = Query(default=None),
+    client_id: uuid.UUID | None = Query(default=None),
     current_comrade: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
+    if request.headers.get("X-Media-Storage") != "device-v1":
+        raise HTTPException(426, "Update the app before sending device-owned media")
     await require_membership(db, soviet_id, current_comrade)
+    if client_id is not None:
+        existing = await db.scalar(select(Dispatch).options(
+            selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(Dispatch.id == client_id))
+        if existing is not None:
+            if existing.sender_id != current_comrade.id or existing.soviet_id != soviet_id:
+                raise HTTPException(409, "Client message identifier already used")
+            return DispatchOut.model_validate(existing)
     reply_id, reply = await require_reply(db, soviet_id, reply_to_id)
     mime_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
     if mime_type not in ATTACHMENT_TYPES:
@@ -313,14 +381,30 @@ async def send_attachment(
     if not data:
         raise HTTPException(400, "Empty attachment")
 
-    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data))
+    if is_sticker and (mime_type != "image/webp" or len(data) > 512 * 1024 or
+                       bytes(data[:4]) != b"RIFF" or bytes(data[8:12]) != b"WEBP"):
+        raise HTTPException(422, "Sticker must be a WebP file up to 512 KiB")
+    await admit_media(db, len(data))
+    forwarded = None
+    if forward_from_id is not None:
+        source = await db.scalar(select(Dispatch).options(
+            selectinload(Dispatch.sender), selectinload(Dispatch.forwarded)).where(
+            Dispatch.id == forward_from_id, Dispatch.is_purged.is_(False), visible_to(current_comrade.id)))
+        if source is None:
+            raise HTTPException(404, "Forward source unavailable")
+        await require_membership(db, source.soviet_id, current_comrade)
+        forwarded = DispatchForward(sender_name=source.forwarded.sender_name if source.forwarded else
+                                    source.sender.callsign if source.sender else "Camarada")
+    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data), is_sticker=is_sticker)
     dispatch = Dispatch(
-        soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id, forwarded=None,
-        content={"image": "Фото", "video": "Видео", "audio": "Аудио"}[mime_type.split("/")[0]],
+        id=client_id or uuid.uuid4(),
+        soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id, forwarded=forwarded,
+        content="Sticker" if is_sticker else {"image": "Фото", "video": "Видео", "audio": "Аудио"}[mime_type.split("/")[0]],
     )
     db.add(dispatch)
     await db.flush()
     result = DispatchOut.model_validate(dispatch).model_copy(update={"reply": ReplyOut.model_validate(reply) if reply else None})
+    await register_recipients(db, dispatch)
     await db.commit()
 
     event = result.model_dump(mode="json", exclude={"sender", "is_purged"})
@@ -368,11 +452,13 @@ async def download_attachment(
     await require_membership(db, soviet_id, current_comrade)
     attachment = (await db.execute(
         attachment_query(soviet_id, current_comrade.id).with_only_columns(
-            DispatchAttachment.data, DispatchAttachment.mime_type,
+            DispatchAttachment.data, DispatchAttachment.mime_type, DispatchAttachment.expires_at,
         ).where(DispatchAttachment.dispatch_id == dispatch_id)
     )).one_or_none()
     if attachment is None:
         raise HTTPException(404, "Attachment not found")
+    if attachment.data is None or attachment.expires_at <= utc_now():
+        raise HTTPException(410, "Media is no longer in temporary delivery storage")
     return Response(attachment.data, media_type=attachment.mime_type, headers={
         "Cache-Control": "private, no-store",
         "Content-Disposition": "attachment",
@@ -433,10 +519,7 @@ async def forward_messages(soviet_id: uuid.UUID, payload: ForwardMessages,
     for original in originals:
         attachment = None
         if original.attachment is not None:
-            data = await db.scalar(select(DispatchAttachment.data).where(
-                DispatchAttachment.dispatch_id == original.id))
-            attachment = DispatchAttachment(name=original.attachment.name,
-                mime_type=original.attachment.mime_type, data=data)
+            raise HTTPException(409, "Forward media from its local device copy")
         copy = Dispatch(soviet_id=payload.target_chat_id, sender=current,
             content=original.content, attachment=attachment,
             forwarded=DispatchForward(sender_name=original.forwarded.sender_name if original.forwarded

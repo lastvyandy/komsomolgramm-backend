@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import String, DateTime, ForeignKey, Enum, Text, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -28,6 +28,8 @@ class Comrade(Base):
     callsign: Mapped[str] = mapped_column(String(100), nullable=False)
     bubble_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
     bio: Mapped[str] = mapped_column(String(280), default="", server_default="", nullable=False)
+    country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    nationality: Mapped[str | None] = mapped_column(String(80), nullable=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -124,7 +126,9 @@ class DispatchAttachment(Base):
     )
     name: Mapped[str] = mapped_column(String(180))
     mime_type: Mapped[str] = mapped_column(String(80))
-    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    data: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: utc_now() + timedelta(hours=24), nullable=False)
+    is_sticker: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
 
 
 class Contact(Base):
@@ -162,3 +166,10 @@ class DispatchHidden(Base):
     __tablename__ = "dispatch_hidden"
     dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+
+
+class AttachmentRecipient(Base):
+    __tablename__ = "attachment_recipients"
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatch_attachments.dispatch_id", ondelete="CASCADE"), primary_key=True)
+    comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    downloaded: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
