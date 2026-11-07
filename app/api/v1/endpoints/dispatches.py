@@ -1,15 +1,15 @@
 import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
-from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment
-from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut
+from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction
+from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut, ReactionCount
 from app.api.v1.endpoints.ws import get_socket_manager
 from app.services.replies import reply_summaries, require_reply
 
@@ -62,7 +62,33 @@ async def get_soviet_dispatches(
 
     # Revertir para entregar en orden cronológico (los más antiguos primero)
     replies = await reply_summaries(db, soviet_id, {m.reply_to_id for m in dispatches if m.reply_to_id})
-    return [DispatchOut.model_validate(m).model_copy(update={"reply": ReplyOut.model_validate(replies[m.reply_to_id]) if m.reply_to_id in replies else None}) for m in reversed(dispatches)]
+    message_ids = [message.id for message in dispatches]
+    reaction_counts: dict[uuid.UUID, dict[str, int]] = {}
+    my_reactions: dict[uuid.UUID, str] = {}
+    if message_ids:
+        reactions = (await db.execute(select(DispatchReaction).where(
+            DispatchReaction.dispatch_id.in_(message_ids)
+        ))).scalars().all()
+        for reaction in reactions:
+            by_emoji = reaction_counts.setdefault(reaction.dispatch_id, {})
+            by_emoji[reaction.emoji] = by_emoji.get(reaction.emoji, 0) + 1
+            if reaction.comrade_id == current_comrade.id:
+                my_reactions[reaction.dispatch_id] = reaction.emoji
+
+    result = []
+    for message in reversed(dispatches):
+        result.append(DispatchOut.model_validate(message).model_copy(update={
+            "reply": ReplyOut.model_validate(replies[message.reply_to_id]) if message.reply_to_id in replies else None,
+            "reactions": [
+                ReactionCount(stamp=stamp, count=count)
+                for stamp, count in sorted(
+                    reaction_counts.get(message.id, {}).items(),
+                    key=lambda pair: (-pair[1], pair[0]),
+                )
+            ],
+            "my_reaction": my_reactions.get(message.id),
+        }))
+    return result
 
 @router.put("/{soviet_id}/read/{dispatch_id}", status_code=204)
 async def mark_dispatch_read(
