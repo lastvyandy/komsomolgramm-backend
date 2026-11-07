@@ -1,7 +1,7 @@
 import enum
 import uuid
-from datetime import datetime, timezone, timedelta
-from sqlalchemy import String, DateTime, ForeignKey, Enum, Text, LargeBinary
+from datetime import date, datetime, timezone, timedelta
+from sqlalchemy import String, Date, DateTime, ForeignKey, Enum, Text, LargeBinary
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
@@ -30,6 +30,7 @@ class Comrade(Base):
     bio: Mapped[str] = mapped_column(String(280), default="", server_default="", nullable=False)
     country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     nationality: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

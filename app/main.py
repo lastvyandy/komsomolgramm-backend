@@ -36,6 +36,8 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("UPDATE dispatch_attachments SET expires_at = now() WHERE expires_at IS NULL")
         await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ALTER COLUMN expires_at SET NOT NULL")
 
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS birth_date DATE")
+
     configure_push()
     from app.services.media_relay import cleanup_loop
     media_cleanup = asyncio.create_task(cleanup_loop())

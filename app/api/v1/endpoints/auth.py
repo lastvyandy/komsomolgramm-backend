@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 import re
 import json
 import hashlib
@@ -92,6 +93,7 @@ class ProfileUpdate(BaseModel):
     bio: str | None = Field(default=None, max_length=280)
     country_code: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     nationality: str | None = Field(default=None, max_length=80)
+    birth_date: date | None = None
 
 
 @router.patch("/me", response_model=ComradeOut)
@@ -100,8 +102,10 @@ async def update_profile(
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
-    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set - {"country_code", "nationality"}):
+    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set - {"country_code", "nationality", "birth_date"}):
         raise HTTPException(422, "Provide non-null profile fields")
+    if profile.birth_date is not None and profile.birth_date > date.today():
+        raise HTTPException(422, "Birthday cannot be in the future")
     if profile.callsign is not None:
         name = profile.callsign.strip()
         if len(name) < 2:
@@ -118,6 +122,8 @@ async def update_profile(
         current.username = username
     if profile.bio is not None:
         current.bio = profile.bio.strip()
+    if "birth_date" in profile.model_fields_set:
+        current.birth_date = profile.birth_date
     if "country_code" in profile.model_fields_set:
         current.country_code = profile.country_code
     if "nationality" in profile.model_fields_set:
