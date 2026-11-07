@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 import fakeredis.aioredis
 from app.models.models import Base,Comrade,Soviet,SovietMember,Dispatch,SovietReadCursor
 from app.db.session import get_async_db
-from app.api.v1.endpoints import auth,dispatches,ws
+from app.api.v1.endpoints import auth,dispatches,soviets,ws
 from app.api.deps import get_current_comrade
 from app.core.security import create_access_token
 from app.services.replies import require_reply
@@ -36,7 +36,7 @@ class Manager:
   self.events.append(event)
   for socket in list(self.clients):await socket.send_json(event)
 manager=Manager();ws.socket_manager=manager
-app=FastAPI();app.include_router(auth.router,prefix='/auth');app.include_router(dispatches.router,prefix='/dispatches');app.include_router(ws.router,prefix='/ws')
+app=FastAPI();app.include_router(auth.router,prefix='/auth');app.include_router(soviets.router,prefix='/soviets');app.include_router(dispatches.router,prefix='/dispatches');app.include_router(ws.router,prefix='/ws')
 async def db_override():
  async with sessions() as db:yield db
 app.dependency_overrides[get_async_db]=db_override
@@ -61,6 +61,10 @@ async def http_checks():
   quote=next(m for m in history.json() if m['id']==str(reply_id))['reply'];assert quote['content']=='Original'
   assert (await c.get(f'/dispatches/{room}/context/{target}',headers=headers(1))).status_code==200
   assert (await c.get(f'/dispatches/{room}',headers=headers(2))).status_code==403
+  page=await c.get(f'/dispatches/{room}?limit=1',headers=headers(0));assert page.status_code==200
+  cursor=page.json()[0]['id']
+  older=await c.get(f'/dispatches/{room}?limit=5&before_id={cursor}',headers=headers(0));assert older.status_code==200
+  assert all(m['id']!=cursor for m in older.json())
   bad=await c.post(f'/dispatches/{room}/attachments?name=a.jpg&reply_to_id={foreign}',headers={**headers(0),'Content-Type':'image/jpeg'},content=b'abc');assert bad.status_code==404,bad.text
   uploaded=await c.post(f'/dispatches/{room}/attachments?name=a.jpg&reply_to_id={target}',headers={**headers(1),'Content-Type':'image/jpeg'},content=b'abc');assert uploaded.status_code==201,uploaded.text
   assert uploaded.json()['reply']['id']==str(target)
@@ -68,6 +72,13 @@ async def http_checks():
   assert (await c.put(f'/dispatches/{room}/read/{reply_id}',headers=headers(1))).status_code==204
   readers=(await c.get(f'/dispatches/{room}/readers',headers=headers(0))).json();assert readers[0]['message_id']==str(reply_id)
   assert (await c.get(f'/dispatches/{room}/readers',headers=headers(2))).status_code==403
+  # Existing group members can add recent contacts; strangers and direct rooms cannot.
+  added=await c.post(f'/soviets/{room}/members',headers=headers(0),json={'member_ids':[str(ids[2])]})
+  assert added.status_code==200,added.text
+  assert sum(m['comrade']['id']==str(ids[2]) for m in added.json()['members'])==1
+  repeated=await c.post(f'/soviets/{room}/members',headers=headers(0),json={'member_ids':[str(ids[2])]})
+  assert repeated.status_code==200 and sum(m['comrade']['id']==str(ids[2]) for m in repeated.json()['members'])==1
+  assert (await c.post(f'/soviets/{other_room}/members',headers=headers(0),json={'member_ids':[str(ids[1])]})).status_code==404
   assert manager.events[-1]['type']=='read'
   assert (await c.put(f'/dispatches/{room}/read/{target}',headers=headers(1))).status_code==204
   after_older=(await c.get(f'/dispatches/{room}/readers',headers=headers(0))).json()
@@ -94,13 +105,14 @@ async def http_checks():
   # Purging originals redacts quotes on subsequent loads.
   deleted=await c.delete(f'/dispatches/{room}/messages/{target}',headers=headers(0));assert deleted.status_code==204,deleted.text
   history=(await c.get(f'/dispatches/{room}',headers=headers(1))).json();assert next(m for m in history if m['id']==str(reply_id))['reply'] is None
- print('PASS contacts, history/context, reply permissions, media replies, read receipts, multi-session presence and reciprocal privacy')
+  print('PASS contacts, cursor history, add members, reply permissions, media replies, read receipts and presence privacy')
 asyncio.run(setup());asyncio.run(http_checks())
 # Real websocket event loop with the same persisted database.
 with TestClient(app) as client:
  with client.websocket_connect(f'/ws/soviets/{room}?token='+create_access_token(ids[0])) as socket:
   socket.send_json({'type':'typing','active':True});assert socket.receive_json()['type']=='typing'
   socket.send_json({'type':'typing','active':False});assert socket.receive_json()['active'] is False
+  socket.send_json({'type':'buzz'});assert socket.receive_json()['type']=='buzz'
   socket.send_json({'type':'dispatch','content':'Invalid quote','reply_to_id':str(foreign)});assert socket.receive_json()['type']=='error'
   socket.send_json({'type':'dispatch','content':'Socket reply','reply_to_id':str(reply_id)})
   message=socket.receive_json();assert message['reply']['id']==str(reply_id),message
@@ -109,5 +121,5 @@ with TestClient(app) as client:
   assert socket.receive_json()['active'] is True
  assert manager.events[-1]['type']=='typing' and manager.events[-1]['active'] is False
 assert not manager.clients
-print('PASS websocket typing/stop, foreign reply rejection, persisted reply and connection cleanup')
+print('PASS websocket typing/stop, buzz event, foreign reply rejection, persisted reply and connection cleanup')
 os.unlink(db_path)

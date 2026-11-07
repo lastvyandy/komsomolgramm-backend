@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
 from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietReadCursor, SovietType, ComradeRole
-from app.schemas.soviet import ChatPreview, SovietCreate, SovietOut
+from app.schemas.soviet import ChatPreview, SovietCreate, SovietMembersAdd, SovietOut
 
 router = APIRouter()
 
@@ -144,6 +144,46 @@ async def read_soviet(
     if soviet is None:
         raise HTTPException(404, "Chat not found")
     return soviet
+
+
+@router.post("/{soviet_id}/members", response_model=SovietOut)
+async def add_soviet_members(
+    soviet_id: uuid.UUID,
+    payload: SovietMembersAdd,
+    current_comrade: Comrade = Depends(get_current_comrade),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Adds active comrades to a group. Existing members may invite people."""
+    group = (await db.execute(
+        select(Soviet).join(Soviet.members).where(
+            Soviet.id == soviet_id,
+            SovietMember.comrade_id == current_comrade.id,
+        )
+    )).scalar_one_or_none()
+    if group is None:
+        raise HTTPException(404, "Group not found")
+    if group.soviet_type == SovietType.DIRECT:
+        raise HTTPException(403, "Direct chats cannot have additional members")
+
+    requested = set(payload.member_ids) - {current_comrade.id}
+    if not requested:
+        raise HTTPException(422, "Select at least one other member")
+    active_ids = set((await db.scalars(
+        select(Comrade.id).where(Comrade.id.in_(requested), Comrade.is_active.is_(True))
+    )).all())
+    if active_ids != requested:
+        raise HTTPException(422, "One or more participants are unavailable")
+    existing = set((await db.scalars(select(SovietMember.comrade_id).where(
+        SovietMember.soviet_id == soviet_id,
+        SovietMember.comrade_id.in_(requested),
+    ))).all())
+    db.add_all(SovietMember(soviet_id=soviet_id, comrade_id=person_id, role=ComradeRole.COMRADE)
+               for person_id in requested - existing)
+    await db.commit()
+    return (await db.execute(
+        select(Soviet).options(selectinload(Soviet.members).selectinload(SovietMember.comrade))
+        .where(Soviet.id == soviet_id)
+    )).scalar_one()
 
 
 @router.post("/{soviet_id}/join", response_model=SovietOut)

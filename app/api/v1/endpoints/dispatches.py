@@ -20,6 +20,7 @@ async def get_soviet_dispatches(
     soviet_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    before_id: uuid.UUID | None = Query(default=None),
     current_comrade: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db)
 ):
@@ -37,13 +38,21 @@ async def get_soviet_dispatches(
         )
 
     # 2. Consultar despachos ordenados por fecha ascendente para el cliente móvil
+    conditions = [Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False)]
+    if before_id is not None:
+        cursor = await db.scalar(select(Dispatch).where(
+            Dispatch.id == before_id,
+            Dispatch.soviet_id == soviet_id,
+            Dispatch.is_purged.is_(False),
+        ))
+        if cursor is None:
+            raise HTTPException(404, "History cursor not found")
+        conditions.append(tuple_(Dispatch.created_at, Dispatch.id) < tuple_(cursor.created_at, cursor.id))
+        offset = 0
     stmt = (
         select(Dispatch)
         .options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment))
-        .where(
-            Dispatch.soviet_id == soviet_id,
-            Dispatch.is_purged == False  # noqa: E712
-        )
+        .where(*conditions)
         .order_by(Dispatch.created_at.desc(), Dispatch.id.desc())
         .limit(limit)
         .offset(offset)

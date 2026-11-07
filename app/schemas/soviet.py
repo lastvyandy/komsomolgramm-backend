@@ -11,6 +11,9 @@ class SovietBase(BaseModel):
 class SovietCreate(SovietBase):
     member_ids: list[uuid.UUID] = Field(default_factory=list)
 
+class SovietMembersAdd(BaseModel):
+    member_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+
 class SovietMemberOut(BaseModel):
     id: uuid.UUID
     role: ComradeRole

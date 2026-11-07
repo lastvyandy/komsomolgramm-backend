@@ -43,6 +43,7 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
 
     await manager.connect(soviet_id, websocket)
     last_typing = 0.0
+    last_buzz = 0.0
     was_typing = False
     try:
         while True:
@@ -64,6 +65,16 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
                     if active:
                         last_typing = now
                     was_typing = active
+                continue
+            if event_type == "buzz":
+                now = time.monotonic()
+                if now - last_buzz >= 5:
+                    await manager.publish_dispatch(soviet_id, {
+                        "type": "buzz",
+                        "sender_id": str(comrade_id),
+                        "sender_callsign": sender_callsign,
+                    })
+                    last_buzz = now
                 continue
             if event_type == "reaction":
                 try:

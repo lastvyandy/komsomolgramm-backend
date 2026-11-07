@@ -29,6 +29,13 @@ curl -sS http://127.0.0.1:8000/health
   El cliente envía parada al dejar de escribir o salir, y elimina indicadores
   que no se renuevan en seis segundos. El servidor también publica parada al
   desconectarse el socket.
+- Historial: `before_id` pagina los mensajes anteriores usando un cursor del
+  mismo chat, por lo que los mensajes nuevos no desplazan el punto de lectura.
+- Grupos: los miembros pueden añadir hasta 50 camaradas activos por solicitud
+  con `POST /soviets/{id}/members`. Los chats privados rechazan cambios de
+  miembros y repetir una solicitud no duplica miembros.
+- Zumbido: evento WebSocket autenticado, transitorio y no persistido; se limita
+  a uno cada cinco segundos por conexión.
 - Presencia: mientras la app está en primer plano, renueva una sesión cada
   veinte segundos. La sesión vence a los cuarenta y cinco segundos si la app
   pierde conexión. Al salir envía una parada. Las sesiones se contabilizan por
@@ -49,10 +56,10 @@ python tests/check_messaging.py
 ```
 
 La comprobación utiliza una base SQLite temporal, Redis simulado y transporte
-de push desactivado. Prueba permisos de respuestas y archivos, historial y
-contexto, citas eliminadas, contactos por cuenta, cursores de lectura que no
-retroceden, varias sesiones, privacidad y eventos WebSocket de escritura y
-respuesta. No utiliza la base de datos del VPS. No sustituye una comprobación
+de push desactivado. Prueba permisos de respuestas y archivos, historial con
+cursor, grupos, contexto, citas eliminadas, contactos por cuenta, cursores de
+lectura que no retroceden, varias sesiones, privacidad y eventos WebSocket de
+escritura, zumbido y respuesta. No utiliza la base de datos del VPS. No sustituye una comprobación
 del despliegue con PostgreSQL y Redis reales.
 
 En Android, probar con dos cuentas: escritura/parada, respuesta a texto y
