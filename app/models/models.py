@@ -101,6 +101,19 @@ class Dispatch(Base):
     attachment: Mapped["DispatchAttachment | None"] = relationship()
 
 
+class DispatchReaction(Base):
+    __tablename__ = "dispatch_reactions"
+
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True
+    )
+    comrade_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True
+    )
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class DispatchAttachment(Base):
     __tablename__ = "dispatch_attachments"
 
