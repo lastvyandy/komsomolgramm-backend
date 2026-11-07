@@ -25,7 +25,7 @@ async def register_comrade(
     comrade_in: ComradeCreate,
     db: AsyncSession = Depends(get_async_db)
 ):
-    username = comrade_in.username.strip().lower()
+    username = comrade_in.username.strip().lstrip("@").strip().lower()
     if not re.fullmatch(r"[a-z0-9_]{3,50}", username):
         raise HTTPException(422, "Username must contain 3-50 letters, digits or underscores")
     query = select(Comrade).where(func.lower(Comrade.username) == username)
@@ -56,7 +56,8 @@ async def issue_salvoconducto(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_async_db)
 ):
-    query = select(Comrade).where(Comrade.username == form_data.username)
+    username = form_data.username.strip().lstrip("@").strip().lower()
+    query = select(Comrade).where(func.lower(Comrade.username) == username)
     result = await db.execute(query)
     comrade = result.scalar_one_or_none()
 
