@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 import fakeredis.aioredis
-from app.models.models import Base,Comrade,Soviet,SovietMember,Dispatch,SovietReadCursor
+from app.models.models import Base,Comrade,Soviet,SovietType,SovietMember,Dispatch,SovietReadCursor
 from app.db.session import get_async_db
 from app.api.v1.endpoints import auth,dispatches,soviets,ws
 from app.api.deps import get_current_comrade
@@ -40,14 +40,15 @@ app=FastAPI();app.include_router(auth.router,prefix='/auth');app.include_router(
 async def db_override():
  async with sessions() as db:yield db
 app.dependency_overrides[get_async_db]=db_override
-ids=[uuid.uuid4() for _ in range(3)];room=uuid.uuid4();other_room=uuid.uuid4();target=uuid.uuid4();foreign=uuid.uuid4();reply_id=uuid.uuid4()
+ids=[uuid.uuid4() for _ in range(3)];room=uuid.uuid4();other_room=uuid.uuid4();direct_room=uuid.uuid4();target=uuid.uuid4();foreign=uuid.uuid4();reply_id=uuid.uuid4()
 def headers(index):return {'Authorization':'Bearer '+create_access_token(ids[index])}
 async def setup():
  async with engine.begin() as conn:await conn.run_sync(Base.metadata.create_all)
  async with sessions() as db:
   db.add_all([Comrade(id=i,username='user'+str(n),callsign='User '+str(n),hashed_password='unused') for n,i in enumerate(ids)])
-  db.add_all([Soviet(id=room,name='Group'),Soviet(id=other_room,name='Other')]);await db.flush()
+  db.add_all([Soviet(id=room,name='Group'),Soviet(id=other_room,name='Other'),Soviet(id=direct_room,soviet_type=SovietType.DIRECT)]);await db.flush()
   db.add_all([SovietMember(soviet_id=room,comrade_id=i) for i in ids[:2]])
+  db.add_all([SovietMember(soviet_id=direct_room,comrade_id=i) for i in ids[:2]])
   db.add_all([Dispatch(id=target,soviet_id=room,sender_id=ids[0],content='Original'),Dispatch(id=foreign,soviet_id=other_room,sender_id=ids[2],content='Private'),Dispatch(id=reply_id,soviet_id=room,sender_id=ids[1],content='Reply',reply_to_id=target)])
   await db.commit()
 async def http_checks():
@@ -78,7 +79,8 @@ async def http_checks():
   assert sum(m['comrade']['id']==str(ids[2]) for m in added.json()['members'])==1
   repeated=await c.post(f'/soviets/{room}/members',headers=headers(0),json={'member_ids':[str(ids[2])]})
   assert repeated.status_code==200 and sum(m['comrade']['id']==str(ids[2]) for m in repeated.json()['members'])==1
-  assert (await c.post(f'/soviets/{other_room}/members',headers=headers(0),json={'member_ids':[str(ids[1])]})).status_code==404
+  assert (await c.post(f'/soviets/{other_room}/members',headers=headers(2),json={'member_ids':[str(ids[1])]})).status_code==404
+  assert (await c.post(f'/soviets/{direct_room}/members',headers=headers(0),json={'member_ids':[str(ids[2])]})).status_code==403
   assert manager.events[-1]['type']=='read'
   assert (await c.put(f'/dispatches/{room}/read/{target}',headers=headers(1))).status_code==204
   after_older=(await c.get(f'/dispatches/{room}/readers',headers=headers(0))).json()
