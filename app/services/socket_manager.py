@@ -51,7 +51,7 @@ class SovietSocketManager:
         """Publica el despacho en el canal Redis del Soviet para todas las réplicas."""
         channel = f"soviet:{str(soviet_id)}"
         await self.redis.publish(channel, json.dumps(payload))
-        if payload.get("type") == "dispatch" and payload.get("sender_id"):
+        if payload.get("type") in {"dispatch", "buzz"} and payload.get("sender_id"):
             task = asyncio.create_task(send_push(soviet_id, payload))
             self.push_tasks.add(task)
             task.add_done_callback(self.push_tasks.discard)
