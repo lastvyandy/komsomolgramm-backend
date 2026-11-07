@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.db.session import get_async_db
-from app.models.models import Comrade, ComradeAvatar, PushDevice
+from app.models.models import Comrade, ComradeAvatar, PushDevice, Contact
 from app.schemas.comrade import ComradeCreate, ComradeOut, Token
 from app.api.deps import get_current_comrade
 
@@ -225,3 +225,29 @@ async def get_avatar(
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
     })
+
+
+@router.get("/contacts", response_model=list[ComradeOut])
+async def list_contacts(current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    return (await db.scalars(select(Comrade).join(Contact, Contact.person_id == Comrade.id).where(
+        Contact.owner_id == current.id, Comrade.is_active.is_(True)
+    ).order_by(Comrade.callsign, Comrade.username))).all()
+
+
+@router.put("/contacts/{person_id}", status_code=204)
+async def save_contact(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    if person_id == current.id:
+        raise HTTPException(422, "Cannot add yourself")
+    person = await db.get(Comrade, person_id)
+    if person is None or not person.is_active:
+        raise HTTPException(404, "Person not found")
+    await db.execute(insert(Contact).values(owner_id=current.id, person_id=person_id).on_conflict_do_nothing())
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/contacts/{person_id}", status_code=204)
+async def delete_contact(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    await db.execute(delete(Contact).where(Contact.owner_id == current.id, Contact.person_id == person_id))
+    await db.commit()
+    return Response(status_code=204)

@@ -109,3 +109,10 @@ class DispatchAttachment(Base):
     name: Mapped[str] = mapped_column(String(180))
     mime_type: Mapped[str] = mapped_column(String(80))
     data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
