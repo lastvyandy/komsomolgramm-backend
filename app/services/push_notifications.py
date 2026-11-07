@@ -53,6 +53,7 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                             "chat_id": str(chat_id),
                             "message_id": message_id,
                             "sender_id": str(sender_id),
+                            "sender_callsign": payload.get("sender_callsign", ""),
                             "event_type": event_type,
                         },
                         android=messaging.AndroidConfig(
