@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from app.models.models import Base, Comrade, Soviet, SovietMember, Dispatch
+from app.models.models import Base, Comrade, Soviet, SovietMember, Dispatch, DispatchAttachment, DispatchForward, DispatchReaction
 from app.api.v1.endpoints import dispatches
 from app.db.session import get_async_db
 from app.core.security import create_access_token
@@ -57,6 +57,29 @@ class RichMessageChecks(unittest.IsolatedAsyncioTestCase):
   self.assertEqual(history.json()[0]["rich"]["latitude"],56.8389)
   self.assertIn("pt=60.6057,56.8389",history.json()[0]["content"])
   self.assertEqual(self.events[0]["rich"]["kind"],"location")
+
+ async def test_legacy_text_reply_expired_attachment_and_deleted_sender_history(self):
+  from datetime import datetime, timezone, timedelta
+  first=uuid.uuid4();second=uuid.uuid4();third=uuid.uuid4();fourth=uuid.uuid4()
+  async with self.sessions() as db:
+   db.add_all([Dispatch(id=first,soviet_id=self.chat,sender_id=self.ids[0],content="Legacy text"),
+    Dispatch(id=second,soviet_id=self.chat,sender_id=self.ids[1],content="Legacy reply",reply_to_id=first),
+    Dispatch(id=third,soviet_id=self.chat,sender_id=self.ids[0],content="Photo"),
+    Dispatch(id=fourth,soviet_id=self.chat,sender_id=None,content="Deleted sender")])
+   await db.flush()
+   db.add(DispatchAttachment(dispatch_id=third,name="old.jpg",mime_type="image/jpeg",data=None,
+     expires_at=datetime.now(timezone.utc)-timedelta(days=2)))
+   db.add(DispatchReaction(dispatch_id=first,comrade_id=self.ids[1],emoji="👍"))
+   db.add(DispatchForward(dispatch_id=fourth,sender_name="Legacy sender"))
+   await db.commit()
+  result=await self.client.get(f"/dispatches/{self.chat}",headers=self.headers())
+  self.assertEqual(result.status_code,200,result.text)
+  messages={m['id']:m for m in result.json()}
+  self.assertEqual(len(messages),4)
+  self.assertIsNone(messages[str(first)]['rich'])
+  self.assertEqual(messages[str(second)]['reply']['content'],'Legacy text')
+  self.assertEqual(messages[str(third)]['attachment']['name'],'old.jpg')
+  self.assertIsNone(messages[str(fourth)]['sender'])
 
  async def test_coordinate_validation(self):
   for lat,lon in [(91,0),(0,181),(-91,0)]:
