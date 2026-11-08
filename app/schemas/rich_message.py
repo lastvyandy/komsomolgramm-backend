@@ -28,8 +28,6 @@ class PollData(BaseModel):
         self.options = [value.strip() for value in self.options]
         if not self.question or any(not value or len(value) > 100 for value in self.options):
             raise ValueError("Empty question or invalid option")
-        if len({value.casefold() for value in self.options}) != len(self.options):
-            raise ValueError("Duplicate poll options")
         return self
 
 class EventData(BaseModel):

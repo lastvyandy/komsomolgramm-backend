@@ -6,11 +6,12 @@ from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
 from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden, AttachmentRecipient, DispatchChoice, utc_now
-from app.schemas.dispatch import AttachmentOut, DispatchCreate, DispatchOut, ReplyOut, ReactionCount, ForwardMessages, DeleteMessages
+from app.schemas.dispatch import AttachmentOut, DispatchCreate, QueuedDispatchCreate, DispatchOut, ReplyOut, ReactionCount, ForwardMessages, DeleteMessages
 from app.api.v1.endpoints.ws import get_socket_manager
 from app.services.replies import reply_summaries, require_reply
 
@@ -300,6 +301,58 @@ async def mark_dispatch_read(
     except Exception:
         logger.exception("Read cursor stored but live delivery failed")
     return Response(status_code=204)
+
+
+
+@router.post("/{soviet_id}/queued-messages", response_model=DispatchOut, status_code=201)
+async def create_queued_dispatch(soviet_id: uuid.UUID, payload: QueuedDispatchCreate,
+                                 current: Comrade = Depends(get_current_comrade),
+                                 db: AsyncSession = Depends(get_async_db)):
+    """Persist a device-generated UUID once, including concurrent retries."""
+    owner = current.id
+    await require_membership(db, soviet_id, current)
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(422, "Message cannot be empty")
+
+    async def existing_result():
+        message = await db.scalar(select(Dispatch).options(
+            selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(Dispatch.id == payload.client_id))
+        if message is None:
+            return None
+        if message.sender_id != owner or message.soviet_id != soviet_id:
+            raise HTTPException(409, "Identifier already used")
+        replies = await reply_summaries(db, soviet_id, {message.reply_to_id} if message.reply_to_id else set())
+        return DispatchOut.model_validate(message).model_copy(update={
+            "reply": ReplyOut.model_validate(replies[message.reply_to_id]) if message.reply_to_id in replies else None})
+
+    existing = await existing_result()
+    if existing is not None:
+        return existing
+    reply_id, reply = await require_reply(db, soviet_id, payload.reply_to_id)
+    message = Dispatch(id=payload.client_id, soviet_id=soviet_id, sender=current, content=content, reply_to_id=reply_id)
+    db.add(message)
+    try:
+        await db.flush()
+        message.attachment = None
+        message.forwarded = None
+        result = DispatchOut.model_validate(message).model_copy(update={
+            "reply": ReplyOut.model_validate(reply) if reply else None})
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await existing_result()
+        if existing is not None:
+            return existing
+        raise
+    event = result.model_dump(mode="json", exclude={"sender", "is_purged"})
+    event.update(type="dispatch", sender_id=str(owner), sender_callsign=result.sender.callsign,
+                 sender_username=result.sender.username, bubble_color=result.sender.bubble_color)
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id, event)
+    except Exception:
+        logger.exception("Queued message saved but live delivery failed")
+    return result
 
 
 @router.post("/{soviet_id}/messages", status_code=204)

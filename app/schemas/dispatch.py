@@ -6,6 +6,11 @@ from app.schemas.comrade import ComradeOut
 class DispatchCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=4000)
 
+class QueuedDispatchCreate(DispatchCreate):
+    client_id: uuid.UUID
+    reply_to_id: uuid.UUID | None = None
+
+
 class AttachmentOut(BaseModel):
     dispatch_id: uuid.UUID
     name: str

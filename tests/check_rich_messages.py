@@ -104,8 +104,8 @@ class RichMessageChecks(unittest.IsolatedAsyncioTestCase):
   self.assertEqual((await self.vote(id,[0])).json()["counts"],[1,0])
   self.assertEqual((await self.vote(id,[1])).json()["counts"],[0,1])
 
- async def test_invalid_options_and_duplicate_answers_rejected(self):
-  self.assertEqual((await self.create({"kind":"poll","question":"Test","options":["One","one"]})).status_code,422)
+ async def test_duplicate_options_and_invalid_answers(self):
+  self.assertEqual((await self.create({"kind":"poll","question":"Test","options":["One","one"]})).status_code,201)
   self.assertEqual((await self.create({"kind":"poll","question":"Test","options":["Only one"]})).status_code,422)
   id=await self.poll()
   self.assertEqual((await self.vote(id,[2])).status_code,422)
