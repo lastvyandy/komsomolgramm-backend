@@ -34,6 +34,7 @@ class ComradeOut(ComradeBase):
     birth_date: date | None = None
     relationship_status: str | None = Field(default=None, validation_alias="public_relationship_status")
     most_used_app: str | None = Field(default=None, validation_alias="public_most_used_app")
+    most_used_app_icon_revision: str | None = Field(default=None, validation_alias="public_most_used_app_icon_revision")
     is_active: bool
     created_at: datetime
 

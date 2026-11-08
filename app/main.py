@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS share_app_usage BOOLEAN NOT NULL DEFAULT false")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS most_used_app_name VARCHAR(100)")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS app_usage_updated_at TIMESTAMPTZ")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS most_used_app_icon BYTEA")
 
     configure_push()
     from app.services.media_relay import cleanup_loop

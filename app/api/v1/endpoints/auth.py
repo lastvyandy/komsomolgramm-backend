@@ -3,6 +3,9 @@ from datetime import date, datetime, timezone
 import re
 import json
 import hashlib
+import base64
+import binascii
+import struct
 
 from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -95,6 +98,7 @@ async def read_current_comrade_dossier(
 class AppUsageUpdate(BaseModel):
     enabled: bool
     app_name: str | None = Field(default=None, min_length=1, max_length=100)
+    app_icon: str | None = Field(default=None, max_length=22000)
 
 class AppUsageSettings(BaseModel):
     enabled: bool
@@ -116,12 +120,37 @@ async def set_app_activity(payload: AppUsageUpdate,
     label = " ".join(payload.app_name.split()) if payload.app_name is not None else None
     if payload.enabled and label == "":
         raise HTTPException(422, "App name cannot be blank")
+    icon = None
+    if payload.enabled and label and payload.app_icon is not None:
+        try:
+            icon = base64.b64decode(payload.app_icon, validate=True)
+        except (ValueError, binascii.Error):
+            raise HTTPException(422, "Invalid app icon")
+        if (len(icon) > 16 * 1024 or len(icon) < 45 or
+                icon[:8] != b"\x89PNG\r\n\x1a\n" or icon[12:16] != b"IHDR" or
+                not all(1 <= size <= 48 for size in struct.unpack(">II", icon[16:24])) or
+                icon[-12:] != b"\x00\x00\x00\x00IEND\xaeB\x60\x82"):
+            raise HTTPException(422, "Expected a PNG app icon up to 48 pixels and 16 KiB")
+    current.most_used_app_icon = icon
     current.share_app_usage = payload.enabled
     current.most_used_app_name = label if payload.enabled else None
     current.app_usage_updated_at = datetime.now(timezone.utc) if payload.enabled else None
     await db.commit()
     await db.refresh(current)
     return usage_settings(current)
+
+@router.get("/app-icon/{comrade_id}")
+async def app_activity_icon(comrade_id: uuid.UUID, request: Request,
+        viewer: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    person = await db.get(Comrade, comrade_id)
+    revision = person.public_most_used_app_icon_revision if person else None
+    if revision is None:
+        raise HTTPException(404, "No visible app icon")
+    etag = '"' + revision + '"'
+    if request.headers.get("if-match") not in (None, etag):
+        raise HTTPException(412, "App icon changed")
+    return Response(content=person.most_used_app_icon, media_type="image/png",
+        headers={"ETag": etag, "Cache-Control": "private, no-store"})
 
 RelationshipStatus = Literal["single", "married", "open_relationship", "living_life", "dating", "polyamorous", "studying_communism", "free_to_use", "depends", "everything_has_a_price"]
 

@@ -1,4 +1,5 @@
 import enum
+import hashlib
 import uuid
 from datetime import date, datetime, timezone, timedelta
 from sqlalchemy import String, Date, DateTime, ForeignKey, Enum, Text, LargeBinary, JSON
@@ -37,6 +38,7 @@ class Comrade(Base):
 
     share_app_usage: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     most_used_app_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    most_used_app_icon: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     app_usage_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
@@ -47,6 +49,12 @@ class Comrade(Base):
         if not timedelta(0) <= utc_now() - updated <= timedelta(days=8):
             return None
         return self.most_used_app_name
+
+    @property
+    def public_most_used_app_icon_revision(self) -> str | None:
+        if self.public_most_used_app is None or not self.most_used_app_icon:
+            return None
+        return hashlib.sha256(self.most_used_app_icon).hexdigest()
 
     @property
     def public_relationship_status(self) -> str | None:
