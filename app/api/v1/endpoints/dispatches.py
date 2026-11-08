@@ -14,6 +14,7 @@ from app.api.deps import get_current_comrade
 from app.models.models import Comrade, SovietMember, SovietReadCursor, Dispatch, DispatchAttachment, DispatchReaction, DispatchForward, DispatchHidden, AttachmentRecipient, DispatchChoice, utc_now
 from app.schemas.dispatch import AttachmentOut, DispatchCreate, QueuedDispatchCreate, DispatchOut, ReplyOut, ReactionCount, ForwardMessages, DeleteMessages
 from app.api.v1.endpoints.ws import get_socket_manager
+from app.services.councils import require_council_publisher
 from app.services.replies import reply_summaries, require_reply
 
 from app.services.media_relay import admit_media, register_recipients
@@ -36,6 +37,7 @@ async def send_rich(soviet_id: uuid.UUID, payload: RichCreate,
                     current: Comrade = Depends(get_current_comrade),
                     db: AsyncSession = Depends(get_async_db)):
     await require_membership(db, soviet_id, current)
+    await require_council_publisher(db, soviet_id, current.id)
     try:
         identifier = uuid.UUID(payload.client_id)
         reply_to = uuid.UUID(payload.reply_to_id) if payload.reply_to_id else None
@@ -54,6 +56,13 @@ async def send_rich(soviet_id: uuid.UUID, payload: RichCreate,
         text = f"📍 {data['label']}\nhttps://yandex.ru/maps/?pt={data['longitude']},{data['latitude']}&z=16"
     elif kind == "contact":
         text = f"👤 {data['name']}\n{data['phone']}"
+    elif kind == "app_contact":
+        contact = await db.get(Comrade, uuid.UUID(data["user_id"]))
+        if contact is None or not contact.is_active:
+            raise HTTPException(404, "Application contact unavailable")
+        data["name"] = contact.callsign
+        data["username"] = contact.username
+        text = f"👤 {contact.callsign} · @{contact.username}"
     elif kind == "poll":
         text = "📊 " + data["question"] + "\n" + "\n".join(data["options"])
     else:
@@ -312,6 +321,7 @@ async def create_queued_dispatch(soviet_id: uuid.UUID, payload: QueuedDispatchCr
     """Persist a device-generated UUID once, including concurrent retries."""
     owner = current.id
     await require_membership(db, soviet_id, current)
+    await require_council_publisher(db, soviet_id, current.id)
     content = payload.content.strip()
     if not content:
         raise HTTPException(422, "Message cannot be empty")
@@ -365,6 +375,7 @@ async def create_text_dispatch(
 ):
     """Create a text dispatch for quick replies and other authenticated clients."""
     await require_membership(db, soviet_id, current_comrade)
+    await require_council_publisher(db, soviet_id, current_comrade.id)
     content = payload.content.strip()
     if not content:
         raise HTTPException(422, "Message cannot be empty")
@@ -402,6 +413,7 @@ async def edit_dispatch(
     db: AsyncSession = Depends(get_async_db),
 ):
     await require_membership(db, soviet_id, current_comrade)
+    await require_council_publisher(db, soviet_id, current_comrade.id)
     statement = (
         select(Dispatch)
         .options(selectinload(Dispatch.sender), selectinload(Dispatch.attachment))
@@ -451,6 +463,7 @@ async def delete_dispatch(
     db: AsyncSession = Depends(get_async_db),
 ):
     await require_membership(db, soviet_id, current_comrade)
+    await require_council_publisher(db, soviet_id, current_comrade.id)
     statement = (
         select(Dispatch)
         .where(
@@ -529,6 +542,7 @@ async def send_attachment(
     if request.headers.get("X-Media-Storage") != "device-v1":
         raise HTTPException(426, "Update the app before sending device-owned media")
     await require_membership(db, soviet_id, current_comrade)
+    await require_council_publisher(db, soviet_id, current_comrade.id)
     if client_id is not None:
         existing = await db.scalar(select(Dispatch).options(
             selectinload(Dispatch.sender), selectinload(Dispatch.attachment)).where(Dispatch.id == client_id))
@@ -681,6 +695,7 @@ async def forward_messages(soviet_id: uuid.UUID, payload: ForwardMessages,
                            db: AsyncSession = Depends(get_async_db)):
     await require_membership(db, soviet_id, current)
     await require_membership(db, payload.target_chat_id, current)
+    await require_council_publisher(db, payload.target_chat_id, current.id)
     ids = set(payload.message_ids)
     originals = (await db.scalars(select(Dispatch).options(
         selectinload(Dispatch.sender), selectinload(Dispatch.attachment),
@@ -725,6 +740,7 @@ async def delete_messages(soviet_id: uuid.UUID, payload: DeleteMessages,
     if len(messages) != len(ids):
         raise HTTPException(404, "One or more messages are unavailable")
     if payload.for_everyone:
+        await require_council_publisher(db, soviet_id, current.id)
         if any(message.sender_id != current.id for message in messages):
             raise HTTPException(403, "Only your own messages can be deleted for everyone")
         await db.execute(delete(DispatchAttachment).where(DispatchAttachment.dispatch_id.in_(ids)))
@@ -743,3 +759,4 @@ async def delete_messages(soviet_id: uuid.UUID, payload: DeleteMessages,
             except Exception:
                 logger.exception("Batch deletion stored but live delivery failed")
     return Response(status_code=204)
+

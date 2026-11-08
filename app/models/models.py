@@ -94,6 +94,8 @@ class Soviet(Base):
     __tablename__ = "soviets"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    council_key: Mapped[str | None] = mapped_column(String(2), nullable=True, unique=True)
+    council_publisher_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("comrades.id"), nullable=True)
     name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     soviet_type: Mapped[SovietType] = mapped_column(Enum(SovietType), default=SovietType.SOVIET, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -217,3 +219,4 @@ class DispatchChoice(Base):
     dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
     choices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+

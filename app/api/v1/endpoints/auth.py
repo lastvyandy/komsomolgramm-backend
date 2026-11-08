@@ -46,16 +46,14 @@ async def register_comrade(
         is_active=True
     )
     db.add(comrade)
-    if "relationship_status" in profile.model_fields_set:
-        current.relationship_status = profile.relationship_status
-    if profile.show_relationship is not None:
-        current.show_relationship = profile.show_relationship
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(409, "Username already in use")
     await db.refresh(comrade)
+    from app.services.councils import ensure_councils
+    await ensure_councils(db, comrade.id)
     return comrade
 
 @router.post("/login", response_model=Token)
@@ -607,4 +605,5 @@ async def primary_photo(photo_id: uuid.UUID, current: Comrade = Depends(get_curr
     current.avatar_revision = str(uuid.uuid4())
     await db.commit()
     return Response(status_code=204)
+
 

@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.security import decode_access_token
 from app.db.session import async_session_maker
+from app.services.councils import require_council_publisher
 from app.models.models import Comrade, SovietMember, Dispatch, DispatchReaction
 from app.services.socket_manager import SovietSocketManager
 from app.services.replies import require_reply
@@ -54,6 +55,13 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
             if not isinstance(data, dict):
                 continue
             event_type = data.get("type", "dispatch")
+            if event_type in ("dispatch", "typing", "buzz"):
+                async with async_session_maker() as council_db:
+                    try:
+                        await require_council_publisher(council_db, soviet_id, comrade_id)
+                    except HTTPException:
+                        await websocket.send_json({"type": "error", "code": "council_read_only"})
+                        continue
             if event_type == "typing":
                 active = data.get("active") is True
                 now = time.monotonic()
@@ -170,3 +178,4 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
                 })
             except Exception:
                 pass  # Clients also expire stale typing indicators after six seconds.
+

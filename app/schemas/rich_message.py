@@ -1,4 +1,5 @@
 from datetime import datetime
+import uuid
 from typing import Literal, Annotated
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -14,6 +15,11 @@ class ContactData(BaseModel):
     kind: Literal["contact"]
     name: str = Field(min_length=1, max_length=100)
     phone: str = Field(min_length=1, max_length=64)
+
+class AppContactData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["app_contact"]
+    user_id: uuid.UUID
 
 class PollData(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -47,7 +53,7 @@ class EventData(BaseModel):
             raise ValueError("Event must end after it starts")
         return self
 
-RichData = Annotated[LocationData | ContactData | PollData | EventData, Field(discriminator="kind")]
+RichData = Annotated[LocationData | ContactData | AppContactData | PollData | EventData, Field(discriminator="kind")]
 
 class RichCreate(BaseModel):
     rich: RichData
@@ -56,3 +62,4 @@ class RichCreate(BaseModel):
 
 class ChoiceIn(BaseModel):
     choices: list[int] = Field(max_length=12)
+

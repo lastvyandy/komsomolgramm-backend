@@ -68,7 +68,7 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                            SovietMember.comrade_id != sender_id)
                 )).all()
                 chat = (await db.execute(
-                    select(Soviet.name, Soviet.soviet_type).where(Soviet.id == chat_id)
+                    select(Soviet.name, Soviet.soviet_type, Soviet.council_key).where(Soviet.id == chat_id)
                 )).one_or_none()
                 chat_title = (chat.name or "") if chat else ""
                 is_group = bool(chat and chat.soviet_type.value != "direct")
@@ -93,6 +93,7 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                             "message_kind": message_kind,
                             "chat_title": chat_title[:100],
                             "is_group": str(is_group).lower(),
+                            "can_reply": str(not (chat and chat.council_key)).lower(),
                             "created_at": sent_at,
                             "event_type": event_type,
                         },
@@ -121,4 +122,5 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
                         await db.commit()
     except Exception:
         logger.exception("Push notification delivery failed")
+
 

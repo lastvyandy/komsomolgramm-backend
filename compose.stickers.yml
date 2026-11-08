@@ -1,0 +1,4 @@
+services:
+  komsomol_api:
+    environment:
+      TELEGRAM_STICKER_BOT_TOKEN: ${TELEGRAM_STICKER_BOT_TOKEN:-}

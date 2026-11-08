@@ -35,5 +35,8 @@ class SovietOut(SovietBase):
     members: list[SovietMemberOut] = []
     last_message: ChatPreview | None = None
     unread_count: int = 0
+    council_key: str | None = None
+    council_publisher_id: uuid.UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
+

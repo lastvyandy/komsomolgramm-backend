@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_db
 from app.api.deps import get_current_comrade
+from app.services.councils import ensure_councils, COUNCILS
 from app.models.models import Comrade, Dispatch, Soviet, SovietMember, SovietReadCursor, SovietType, ComradeRole, DispatchHidden
 from app.schemas.soviet import ChatPreview, SovietCreate, SovietMembersAdd, SovietOut
 
@@ -73,6 +74,7 @@ async def list_my_soviets(
     db: AsyncSession = Depends(get_async_db)
 ):
     """Lista todos los Soviets donde el camarada participa activamente."""
+    await ensure_councils(db, current_comrade.id)
     latest = (
         select(
             func.left(Dispatch.content, 160).label("content"),
@@ -117,7 +119,7 @@ async def list_my_soviets(
         .join(Soviet.members)
         .outerjoin(latest, true())
         .outerjoin(SovietReadCursor, SovietReadCursor.membership_id == SovietMember.id)
-        .where(SovietMember.comrade_id == current_comrade.id)
+        .where(SovietMember.comrade_id == current_comrade.id, Soviet.council_key.is_(None))
         .options(selectinload(Soviet.members).selectinload(SovietMember.comrade))
         .order_by(func.coalesce(latest.c.created_at, Soviet.created_at).desc(), Soviet.id)
     )
@@ -131,6 +133,32 @@ async def list_my_soviets(
         })
         for soviet, content, sender_id, sender_name, created_at, unread in result.unique().all()
     ]
+
+@router.get("/councils", response_model=list[SovietOut])
+async def list_councils(current_comrade: Comrade = Depends(get_current_comrade),
+        db: AsyncSession = Depends(get_async_db)):
+    await ensure_councils(db, current_comrade.id)
+    results = []
+    for identifier, key, name in COUNCILS:
+        council = await db.get(Soviet, identifier)
+        latest = await db.scalar(select(Dispatch).where(Dispatch.soviet_id == identifier,
+            Dispatch.is_purged.is_(False)).options(selectinload(Dispatch.sender))
+            .order_by(Dispatch.created_at.desc(), Dispatch.id.desc()).limit(1))
+        membership = await db.scalar(select(SovietMember).where(SovietMember.soviet_id == identifier,
+            SovietMember.comrade_id == current_comrade.id))
+        cursor = await db.get(SovietReadCursor, membership.id)
+        unseen = select(func.count()).select_from(Dispatch).where(Dispatch.soviet_id == identifier,
+            Dispatch.is_purged.is_(False), Dispatch.sender_id.is_distinct_from(current_comrade.id),
+            Dispatch.created_at >= membership.joined_at)
+        if cursor:
+            unseen = unseen.where(tuple_(Dispatch.created_at, Dispatch.id) >
+                tuple_(cursor.message_created_at, cursor.message_id))
+        results.append(SovietOut(id=council.id, name=council.name, soviet_type=council.soviet_type,
+            created_at=council.created_at, council_key=key, council_publisher_id=council.council_publisher_id,
+            members=[], unread_count=await db.scalar(unseen) or 0,
+            last_message=ChatPreview(content=latest.content[:160], sender_name=latest.sender.callsign if latest.sender else None,
+                sender_id=latest.sender_id, created_at=latest.created_at) if latest else None))
+    return results
 
 @router.get("/{soviet_id}", response_model=SovietOut)
 async def read_soviet(
@@ -166,6 +194,8 @@ async def add_soviet_members(
     )).scalar_one_or_none()
     if group is None:
         raise HTTPException(404, "Group not found")
+    if group.council_key is not None:
+        raise HTTPException(403, "Council membership is automatic")
     if group.soviet_type == SovietType.DIRECT:
         raise HTTPException(403, "Direct chats cannot have additional members")
 
@@ -315,4 +345,5 @@ async def get_or_create_direct_soviet(
         .where(Soviet.id == new_direct.id)
     )
     return (await db.execute(stmt_reload)).scalar_one()
+
 

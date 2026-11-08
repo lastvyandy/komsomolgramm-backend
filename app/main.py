@@ -45,6 +45,9 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS most_used_app_name VARCHAR(100)")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS app_usage_updated_at TIMESTAMPTZ")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS most_used_app_icon BYTEA")
+        await conn.exec_driver_sql("ALTER TABLE soviets ADD COLUMN IF NOT EXISTS council_key VARCHAR(2)")
+        await conn.exec_driver_sql("ALTER TABLE soviets ADD COLUMN IF NOT EXISTS council_publisher_id UUID REFERENCES comrades(id)")
+        await conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_soviets_council_key ON soviets(council_key)")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS sleep_enabled BOOLEAN NOT NULL DEFAULT false")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS sleep_start INTEGER NOT NULL DEFAULT 1380")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS sleep_end INTEGER NOT NULL DEFAULT 420")
@@ -52,6 +55,10 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ADD COLUMN IF NOT EXISTS is_round_video BOOLEAN NOT NULL DEFAULT false")
 
     configure_push()
+    from app.db.session import async_session_maker
+    from app.services.councils import ensure_councils
+    async with async_session_maker() as council_db:
+        await ensure_councils(council_db)
     from app.services.media_relay import cleanup_loop
     media_cleanup = asyncio.create_task(cleanup_loop())
 
@@ -104,3 +111,4 @@ async def health_check():
         "apparatus": "Comité Central en línea",
         "quota_fulfilled": True
     }
+
