@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 import re
 import json
 import hashlib
@@ -91,6 +91,37 @@ async def read_current_comrade_dossier(
 ):
     """Devuelve el expediente del camarada autenticado."""
     return current_comrade
+
+class AppUsageUpdate(BaseModel):
+    enabled: bool
+    app_name: str | None = Field(default=None, min_length=1, max_length=100)
+
+class AppUsageSettings(BaseModel):
+    enabled: bool
+    app_name: str | None = None
+    updated_at: datetime | None = None
+
+def usage_settings(current: Comrade) -> AppUsageSettings:
+    return AppUsageSettings(enabled=current.share_app_usage,
+        app_name=current.public_most_used_app,
+        updated_at=current.app_usage_updated_at if current.share_app_usage else None)
+
+@router.get("/me/app-activity", response_model=AppUsageSettings)
+async def get_app_activity(current: Comrade = Depends(get_current_comrade)):
+    return usage_settings(current)
+
+@router.put("/me/app-activity", response_model=AppUsageSettings)
+async def set_app_activity(payload: AppUsageUpdate,
+        current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    label = " ".join(payload.app_name.split()) if payload.app_name is not None else None
+    if payload.enabled and label == "":
+        raise HTTPException(422, "App name cannot be blank")
+    current.share_app_usage = payload.enabled
+    current.most_used_app_name = label if payload.enabled else None
+    current.app_usage_updated_at = datetime.now(timezone.utc) if payload.enabled else None
+    await db.commit()
+    await db.refresh(current)
+    return usage_settings(current)
 
 RelationshipStatus = Literal["single", "married", "open_relationship", "living_life", "dating", "polyamorous", "studying_communism", "free_to_use", "depends", "everything_has_a_price"]
 
@@ -301,6 +332,7 @@ async def set_avatar(
     await db.execute(statement.on_conflict_do_update(
         index_elements=[ComradeAvatar.comrade_id], set_={"image": statement.excluded.image}
     ))
+    current.avatar_revision = str(uuid.uuid4())
     await db.commit()
     return Response(status_code=204)
 
@@ -318,6 +350,7 @@ async def remove_avatar(
     await db.execute(delete(ComradeAvatar).where(ComradeAvatar.comrade_id == current.id))
     if next_image:
         db.add(ComradeAvatar(comrade_id=current.id, image=next_image))
+    current.avatar_revision = str(uuid.uuid4())
     await db.commit()
     return Response(status_code=204)
 
@@ -325,6 +358,7 @@ async def remove_avatar(
 @router.get("/avatar/{comrade_id}", response_class=Response)
 async def get_avatar(
     comrade_id: uuid.UUID,
+    request: Request,
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
@@ -336,10 +370,12 @@ async def get_avatar(
     image = result.scalar_one_or_none()
     if image is None:
         raise HTTPException(404, "Profile photo not found")
-    return Response(image, media_type="image/jpeg", headers={
-        "Cache-Control": "private, no-store",
-        "X-Content-Type-Options": "nosniff",
-    })
+    etag = '"' + hashlib.sha256(image).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache",
+               "X-Content-Type-Options": "nosniff", "Vary": "Authorization"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(image, media_type="image/jpeg", headers=headers)
 
 
 @router.get("/contacts", response_model=list[ComradeOut])
@@ -508,6 +544,7 @@ async def primary_photo(photo_id: uuid.UUID, current: Comrade = Depends(get_curr
         raise HTTPException(404, "Photo not found")
     statement = insert(ComradeAvatar).values(comrade_id=current.id, image=image)
     await db.execute(statement.on_conflict_do_update(index_elements=[ComradeAvatar.comrade_id], set_={"image": statement.excluded.image}))
+    current.avatar_revision = str(uuid.uuid4())
     await db.commit()
     return Response(status_code=204)
 

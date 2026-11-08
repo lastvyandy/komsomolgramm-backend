@@ -27,11 +27,13 @@ class ComradeCreate(ComradeBase):
 class ComradeOut(ComradeBase):
     id: uuid.UUID
     bubble_color: str | None = None
+    avatar_revision: str | None = None
     bio: str = ""
     country_code: str | None = None
     nationality: str | None = None
     birth_date: date | None = None
     relationship_status: str | None = Field(default=None, validation_alias="public_relationship_status")
+    most_used_app: str | None = Field(default=None, validation_alias="public_most_used_app")
     is_active: bool
     created_at: datetime
 

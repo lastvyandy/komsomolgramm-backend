@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE dispatches ADD COLUMN IF NOT EXISTS rich JSON")
         await conn.exec_driver_sql("ALTER TABLE dispatches ADD COLUMN IF NOT EXISTS reply_to_id UUID REFERENCES dispatches(id) ON DELETE SET NULL")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bubble_color VARCHAR(16)")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS avatar_revision VARCHAR(36)")
 
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS bio VARCHAR(280) NOT NULL DEFAULT ''")
         await conn.exec_driver_sql("ALTER TABLE comrade_presence ADD COLUMN IF NOT EXISTS show_battery BOOLEAN NOT NULL DEFAULT true")
@@ -40,6 +41,9 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS birth_date DATE")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS relationship_status VARCHAR(40)")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS show_relationship BOOLEAN NOT NULL DEFAULT false")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS share_app_usage BOOLEAN NOT NULL DEFAULT false")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS most_used_app_name VARCHAR(100)")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS app_usage_updated_at TIMESTAMPTZ")
 
     configure_push()
     from app.services.media_relay import cleanup_loop

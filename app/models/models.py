@@ -27,12 +27,26 @@ class Comrade(Base):
     username: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     callsign: Mapped[str] = mapped_column(String(100), nullable=False)
     bubble_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    avatar_revision: Mapped[str | None] = mapped_column(String(36), nullable=True)
     bio: Mapped[str] = mapped_column(String(280), default="", server_default="", nullable=False)
     country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     nationality: Mapped[str | None] = mapped_column(String(80), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     relationship_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     show_relationship: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+
+    share_app_usage: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    most_used_app_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    app_usage_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def public_most_used_app(self) -> str | None:
+        if not self.share_app_usage or not self.most_used_app_name or self.app_usage_updated_at is None:
+            return None
+        updated = self.app_usage_updated_at.replace(tzinfo=timezone.utc) if self.app_usage_updated_at.tzinfo is None else self.app_usage_updated_at
+        if not timedelta(0) <= utc_now() - updated <= timedelta(days=8):
+            return None
+        return self.most_used_app_name
 
     @property
     def public_relationship_status(self) -> str | None:
