@@ -9,3 +9,4 @@ python-jose[cryptography]>=3.3.0,<4.0.0
 passlib[bcrypt]>=1.7.4,<2.0.0
 alembic>=1.13.1,<2.0.0
 python-multipart>=0.0.9,<1.0.0
+tzdata>=2025.1

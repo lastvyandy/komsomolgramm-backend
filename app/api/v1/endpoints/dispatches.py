@@ -1,4 +1,5 @@
 import logging
+from datetime import timezone
 import re
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -519,6 +520,7 @@ async def send_attachment(
     name: str = Query(min_length=1, max_length=180),
     reply_to_id: uuid.UUID | None = Query(default=None),
     is_sticker: bool = Query(default=False),
+    is_round_video: bool = Query(default=False),
     forward_from_id: uuid.UUID | None = Query(default=None),
     client_id: uuid.UUID | None = Query(default=None),
     current_comrade: Comrade = Depends(get_current_comrade),
@@ -550,6 +552,9 @@ async def send_attachment(
     if is_sticker and (mime_type != "image/webp" or len(data) > 512 * 1024 or
                        bytes(data[:4]) != b"RIFF" or bytes(data[8:12]) != b"WEBP"):
         raise HTTPException(422, "Sticker must be a WebP file up to 512 KiB")
+    if is_round_video and (mime_type != "video/mp4" or is_sticker or
+            len(data) < 12 or bytes(data[4:8]) != b"ftyp"):
+        raise HTTPException(422, "Video messages must be MP4 files")
     await admit_media(db, len(data))
     forwarded = None
     if forward_from_id is not None:
@@ -561,7 +566,7 @@ async def send_attachment(
         await require_membership(db, source.soviet_id, current_comrade)
         forwarded = DispatchForward(sender_name=source.forwarded.sender_name if source.forwarded else
                                     source.sender.callsign if source.sender else "Camarada")
-    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data), is_sticker=is_sticker)
+    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data), is_sticker=is_sticker, is_round_video=is_round_video)
     dispatch = Dispatch(
         id=client_id or uuid.uuid4(),
         soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id, forwarded=forwarded,
@@ -623,7 +628,10 @@ async def download_attachment(
     )).one_or_none()
     if attachment is None:
         raise HTTPException(404, "Attachment not found")
-    if attachment.data is None or attachment.expires_at <= utc_now():
+    expires = attachment.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if attachment.data is None or expires <= utc_now():
         raise HTTPException(410, "Media is no longer in temporary delivery storage")
     return Response(attachment.data, media_type=attachment.mime_type, headers={
         "Cache-Control": "private, no-store",

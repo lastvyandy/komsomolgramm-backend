@@ -434,6 +434,34 @@ async def delete_contact(person_id: uuid.UUID, current: Comrade = Depends(get_cu
 
 
 
+class SleepSettings(BaseModel):
+    enabled: bool = False
+    start: int = Field(default=1380, ge=0, le=1439)
+    end: int = Field(default=420, ge=0, le=1439)
+    timezone: str = Field(default="UTC", max_length=80)
+
+@router.get("/me/sleep", response_model=SleepSettings)
+async def get_sleep_settings(current: Comrade = Depends(get_current_comrade)):
+    return SleepSettings(enabled=current.sleep_enabled, start=current.sleep_start,
+        end=current.sleep_end, timezone=current.sleep_timezone)
+
+@router.put("/me/sleep", response_model=SleepSettings)
+async def set_sleep_settings(payload: SleepSettings, current: Comrade = Depends(get_current_comrade),
+        db: AsyncSession = Depends(get_async_db)):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        ZoneInfo(payload.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(422, "Unknown timezone")
+    if payload.enabled and payload.start == payload.end:
+        raise HTTPException(422, "Sleep start and end must differ")
+    current.sleep_enabled = payload.enabled
+    current.sleep_start = payload.start
+    current.sleep_end = payload.end
+    current.sleep_timezone = payload.timezone
+    await db.commit()
+    return payload
+
 class PresenceHeartbeat(BaseModel):
     session_id: uuid.UUID
     active: bool
@@ -541,7 +569,10 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
             stale = (datetime.now(timezone.utc) - reported).total_seconds() > 90
         except (KeyError, TypeError, ValueError):
             stale = True
-    return {"online": bool(count) if visible else None,
+    from app.services.sleep_schedule import in_sleep_window
+    sleeping = visible and not count and in_sleep_window(target.sleep_enabled,
+        target.sleep_start, target.sleep_end, target.sleep_timezone, datetime.now(timezone.utc))
+    return {"sleeping": bool(sleeping), "online": bool(count) if visible else None,
             "last_seen": row.last_seen if row and visible else None, "hidden": not visible,
             "battery_hidden": battery_hidden,
             "battery_level": battery.get("level") if battery else None,

@@ -36,6 +36,11 @@ class Comrade(Base):
     relationship_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     show_relationship: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
 
+    sleep_enabled: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    sleep_start: Mapped[int] = mapped_column(default=1380, server_default="1380", nullable=False)
+    sleep_end: Mapped[int] = mapped_column(default=420, server_default="420", nullable=False)
+    sleep_timezone: Mapped[str] = mapped_column(String(80), default="UTC", server_default="UTC", nullable=False)
+
     share_app_usage: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     most_used_app_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     most_used_app_icon: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -159,6 +164,7 @@ class DispatchAttachment(Base):
     mime_type: Mapped[str] = mapped_column(String(80))
     data: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: utc_now() + timedelta(hours=24), nullable=False)
+    is_round_video: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     is_sticker: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
 
 

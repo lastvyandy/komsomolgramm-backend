@@ -17,6 +17,7 @@ class AttachmentOut(BaseModel):
     mime_type: str
     expires_at: datetime | None = None
     is_sticker: bool = False
+    is_round_video: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
