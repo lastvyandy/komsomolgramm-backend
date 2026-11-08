@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+from app.schemas.favorite_song import FavoriteSongOut
 
 def zodiac_for_date(value: date | None) -> str | None:
     if value is None:
@@ -32,6 +33,7 @@ class ComradeOut(ComradeBase):
     country_code: str | None = None
     nationality: str | None = None
     birth_date: date | None = None
+    favorite_song: FavoriteSongOut | None = Field(default=None, validation_alias="public_favorite_song")
     relationship_status: str | None = Field(default=None, validation_alias="public_relationship_status")
     most_used_app: str | None = Field(default=None, validation_alias="public_most_used_app")
     most_used_app_icon_revision: str | None = Field(default=None, validation_alias="public_most_used_app_icon_revision")

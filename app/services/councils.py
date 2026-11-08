@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from app.models.models import Comrade, Soviet, SovietMember, SovietType, ComradeRole
 
 COUNCILS = [
- (uuid.UUID("4bb63d3e-041f-41fd-887a-000000000001"), "RU", "Avisos del soviet supremo RU"),
+ (uuid.UUID("4bb63d3e-041f-41fd-887a-000000000001"), "RU", "Объявления Верховного Совета RU"),
  (uuid.UUID("4bb63d3e-041f-41fd-887a-000000000002"), "ES", "Avisos del soviet supremo ES"),
 ]
 
@@ -26,6 +26,8 @@ async def ensure_councils(db, person_id=None):
             await db.flush()
         elif council.council_publisher_id is None and publisher is not None:
             council.council_publisher_id = publisher
+        # Repair channels created before native-language titles were introduced.
+        council.name = name
         members = set((await db.scalars(select(SovietMember.comrade_id).where(
             SovietMember.soviet_id == identifier, SovietMember.comrade_id.in_(people)))).all())
         db.add_all([SovietMember(soviet_id=identifier,comrade_id=person,
@@ -37,3 +39,4 @@ async def require_council_publisher(db, chat_id, person_id):
     council = await db.get(Soviet, chat_id)
     if council and council.council_key is not None and council.council_publisher_id != person_id:
         raise HTTPException(403, "Only the council publisher can post announcements")
+

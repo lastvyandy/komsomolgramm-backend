@@ -39,6 +39,8 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ALTER COLUMN expires_at SET NOT NULL")
 
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS birth_date DATE")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS favorite_song JSON")
+        await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS show_favorite_song BOOLEAN NOT NULL DEFAULT false")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS relationship_status VARCHAR(40)")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS show_relationship BOOLEAN NOT NULL DEFAULT false")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS share_app_usage BOOLEAN NOT NULL DEFAULT false")
@@ -111,4 +113,5 @@ async def health_check():
         "apparatus": "Comité Central en línea",
         "quota_fulfilled": True
     }
+
 

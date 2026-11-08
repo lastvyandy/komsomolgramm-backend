@@ -35,6 +35,12 @@ class Comrade(Base):
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     relationship_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     show_relationship: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+    favorite_song: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    show_favorite_song: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+
+    @property
+    def public_favorite_song(self) -> dict | None:
+        return self.favorite_song if self.show_favorite_song else None
 
     sleep_enabled: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     sleep_start: Mapped[int] = mapped_column(default=1380, server_default="1380", nullable=False)
@@ -219,4 +225,5 @@ class DispatchChoice(Base):
     dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
     choices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
 

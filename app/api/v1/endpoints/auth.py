@@ -23,6 +23,26 @@ from app.api.deps import get_current_comrade
 
 router = APIRouter()
 
+from app.schemas.favorite_song import FavoriteSongSettings, FavoriteSongSettingsOut, canonical_song_link
+
+@router.get("/me/favorite-song", response_model=FavoriteSongSettingsOut)
+async def get_favorite_song(current: Comrade = Depends(get_current_comrade)):
+    return FavoriteSongSettingsOut(song=current.favorite_song, visible=current.show_favorite_song)
+
+@router.put("/me/favorite-song", response_model=ComradeOut)
+async def set_favorite_song(payload: FavoriteSongSettings,
+        current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    if payload.song is None:
+        current.favorite_song = None
+        current.show_favorite_song = False
+    else:
+        provider, url = canonical_song_link(payload.song.url)
+        current.favorite_song = {**payload.song.model_dump(), "url": url, "provider": provider}
+        current.show_favorite_song = payload.visible
+    await db.commit()
+    await db.refresh(current)
+    return current
+
 @router.post("/register", response_model=ComradeOut, status_code=status.HTTP_201_CREATED)
 async def register_comrade(
     comrade_in: ComradeCreate,
@@ -605,5 +625,6 @@ async def primary_photo(photo_id: uuid.UUID, current: Comrade = Depends(get_curr
     current.avatar_revision = str(uuid.uuid4())
     await db.commit()
     return Response(status_code=204)
+
 
 
