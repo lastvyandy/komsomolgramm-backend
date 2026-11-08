@@ -31,6 +31,7 @@ class ComradeOut(ComradeBase):
     country_code: str | None = None
     nationality: str | None = None
     birth_date: date | None = None
+    relationship_status: str | None = Field(default=None, validation_alias="public_relationship_status")
     is_active: bool
     created_at: datetime
 

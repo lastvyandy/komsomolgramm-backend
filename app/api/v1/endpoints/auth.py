@@ -43,6 +43,10 @@ async def register_comrade(
         is_active=True
     )
     db.add(comrade)
+    if "relationship_status" in profile.model_fields_set:
+        current.relationship_status = profile.relationship_status
+    if profile.show_relationship is not None:
+        current.show_relationship = profile.show_relationship
     try:
         await db.commit()
     except IntegrityError:
@@ -88,6 +92,17 @@ async def read_current_comrade_dossier(
     """Devuelve el expediente del camarada autenticado."""
     return current_comrade
 
+RelationshipStatus = Literal["single", "married", "open_relationship", "living_life", "dating", "polyamorous", "studying_communism", "free_to_use", "depends", "everything_has_a_price"]
+
+class RelationshipSettings(BaseModel):
+    relationship_status: RelationshipStatus | None = None
+    show_relationship: bool = False
+
+@router.get("/me/relationship", response_model=RelationshipSettings)
+async def relationship_settings(current: Comrade = Depends(get_current_comrade)):
+    return RelationshipSettings(relationship_status=current.relationship_status,
+                                show_relationship=current.show_relationship)
+
 class ProfileUpdate(BaseModel):
     callsign: str | None = Field(default=None, min_length=2, max_length=100)
     username: str | None = Field(default=None, min_length=3, max_length=50)
@@ -95,6 +110,8 @@ class ProfileUpdate(BaseModel):
     country_code: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
     nationality: str | None = Field(default=None, max_length=80)
     birth_date: date | None = None
+    relationship_status: RelationshipStatus | None = None
+    show_relationship: bool | None = None
 
 
 @router.patch("/me", response_model=ComradeOut)
@@ -103,7 +120,7 @@ async def update_profile(
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
-    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set - {"country_code", "nationality", "birth_date"}):
+    if not profile.model_fields_set or any(getattr(profile, key) is None for key in profile.model_fields_set - {"country_code", "nationality", "birth_date", "relationship_status"}):
         raise HTTPException(422, "Provide non-null profile fields")
     if profile.birth_date is not None and profile.birth_date > date.today():
         raise HTTPException(422, "Birthday cannot be in the future")
@@ -129,6 +146,10 @@ async def update_profile(
         current.country_code = profile.country_code
     if "nationality" in profile.model_fields_set:
         current.nationality = profile.nationality.strip() if profile.nationality else None
+    if "relationship_status" in profile.model_fields_set:
+        current.relationship_status = profile.relationship_status
+    if profile.show_relationship is not None:
+        current.show_relationship = profile.show_relationship
     try:
         await db.commit()
     except IntegrityError:
