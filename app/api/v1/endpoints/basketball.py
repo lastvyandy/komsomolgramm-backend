@@ -67,8 +67,6 @@ async def settle(db,row):
     data=row.rich
     if data['status']!='active':return None
     now=utc_now()
-    for p in data['players']:
-        if p['started'] and (now-instant(p['started'])).total_seconds()>=180:p['done']=True
     if now>=instant(data['expires_at']):
         for p in data['players']:p['done']=True
     if not all(p['done'] for p in data['players']):return None
@@ -99,7 +97,7 @@ async def save(db,row):
 
 @router.get('/status')
 async def availability(current=Depends(get_current_comrade)):
-    return {'available':True,'version':1}
+    return {'available':True,'version':2}
 
 @router.post('/{chat}',status_code=201)
 async def create(chat:uuid.UUID,payload:Challenge,current=Depends(get_current_comrade),db=Depends(get_async_db)):
@@ -178,4 +176,29 @@ async def shot(chat:uuid.UUID,identifier:uuid.UUID,payload:Shot,current=Depends(
     if made:player['score']+=1
     else:player['done']=True
     if player['score']>=100:player['done']=True
+    return await save(db,row)
+
+class CompletedTurn(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    request_id:uuid.UUID
+    shots:list[Shot]=Field(default_factory=list,max_length=100)
+
+@router.post('/{chat}/{identifier}/turn')
+async def completed_turn(chat:uuid.UUID,identifier:uuid.UUID,payload:CompletedTurn,current=Depends(get_current_comrade),db=Depends(get_async_db)):
+    row=await message(db,chat,identifier,current);data=row.rich
+    player=next((p for p in data['players'] if p['id']==str(current.id)),None)
+    if player is None:raise HTTPException(403,'Not a player')
+    if player.get('last_turn')==str(payload.request_id):return public(row)
+    if data['status']!='active' or player['done'] or player['started'] is None:raise HTTPException(409,'Turn unavailable')
+    if utc_now()>=instant(data['expires_at']):raise HTTPException(409,'Challenge expired')
+    elapsed=(utc_now()-instant(player['started'])).total_seconds()
+    for item in payload.shots:
+        if player['done'] or item.sequence!=player['sequence']:raise HTTPException(422,'Invalid turn sequence')
+        if item.phase>elapsed+2 or item.phase<player['last_phase']+.65:raise HTTPException(422,'Invalid shot timing')
+        made,target,end,vx=trajectory(row.id,player['score'],item.dx,item.dy,item.phase)
+        player['last_shot']={'made':made,'target':target,'duration':end,'vx':vx}
+        player['last_phase']=item.phase;player['sequence']+=1
+        if made:player['score']+=1
+        if not made or player['score']>=100:player['done']=True
+    player['done']=True;player['last_turn']=str(payload.request_id)
     return await save(db,row)

@@ -37,7 +37,7 @@ def main():
         if args.dry_run:
             print('Revisión completada. No se ejecutó la actualización.');return
         run(command,cwd=directory)
-        check="import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',timeout=3)); assert '/api/v1/basketball/status' in d['paths'], 'Backend anterior sin basket'"
+        check="import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',timeout=3)); assert '/api/v1/basketball/{chat}/{identifier}/turn' in d['paths'], 'Backend anterior sin basket'"
         for _ in range(30):
             result=subprocess.run(['docker','exec',args.container,'python','-c',check],capture_output=True,text=True)
             if result.returncode==0:

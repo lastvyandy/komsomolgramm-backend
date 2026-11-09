@@ -96,3 +96,17 @@ concurrent enrollment checks with a transaction advisory lock. The new enrollmen
 table is created by the existing `Base.metadata.create_all` startup path; no
 existing messages or tables are rewritten. `tests/check_auto_contacts.py` checks
 thresholds, directionality, retries, rollback, groups, system results and removal.
+
+## Local play (Android 1.10.3 / 25)
+
+The court simulates and animates all throws locally. There are no shot requests
+while playing. On miss, time limit or confirmed finish, a single idempotent
+`POST /{chat}/{id}/turn` submits the completed turn. The server checks the bounded
+shot log once and computes the score. Unsent results are stored locally by account
+and challenge and can be retried after reconnecting. A started turn no longer
+expires server-side at 180 seconds while waiting for its upload; each shot phase
+is still limited to 180 seconds and the whole challenge expires at 24 hours.
+Legacy per-shot routes remain for older clients. Deploy this backend before
+installing the new APK. The update helper now verifies the completed-turn route.
+The native renderer caches ball positions and reads frame clocks only during
+Canvas drawing, updating the visible timer once per second.

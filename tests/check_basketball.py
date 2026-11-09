@@ -24,6 +24,24 @@ class BasketballChecks(RichMessageChecks):
   r=await self.client.get('/basketball/status',headers=self.headers())
   self.assertEqual(r.status_code,200,r.text);self.assertTrue(r.json()['available'])
   self.assertEqual((await self.client.get('/basketball/status')).status_code,401)
+ async def test_completed_local_turn_and_retry(self):
+  id=await self.create_game();await self.action(id,'accept',1);await self.action(id,'start')
+  end=basketball.trajectory(id,0,0,-.5,0)[2]
+  dx=(.5-basketball.ball_x(id,0))/end/1.9*.5
+  body={'request_id':str(uuid.uuid4()),'shots':[{'request_id':str(uuid.uuid4()),'sequence':0,'dx':dx,'dy':-.5,'phase':0}]}
+  url=f'/basketball/{self.chat}/{id}/turn'
+  r=await self.client.post(url,headers=self.headers(),json=body)
+  self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['players'][0]['score'],1);self.assertTrue(r.json()['players'][0]['done'])
+  again=await self.client.post(url,headers=self.headers(),json=body);self.assertEqual(again.json()['players'][0]['score'],1)
+  await self.action(id,'start',1)
+  r=await self.client.post(url,headers=self.headers(1),json={'request_id':str(uuid.uuid4()),'shots':[]})
+  self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['status'],'finished')
+ async def test_invalid_batch_does_not_save_partial_score(self):
+  id=await self.create_game();await self.action(id,'accept',1);await self.action(id,'start')
+  shot={'request_id':str(uuid.uuid4()),'sequence':8,'dx':0,'dy':-.5,'phase':0}
+  r=await self.client.post(f'/basketball/{self.chat}/{id}/turn',headers=self.headers(),json={'request_id':str(uuid.uuid4()),'shots':[shot]})
+  self.assertEqual(r.status_code,422,r.text)
+  r=await self.get_game(id);self.assertEqual(r.json()['players'][0]['score'],0);self.assertFalse(r.json()['players'][0]['done'])
  async def test_membership_target_and_authorization(self):
   for target,expected in [(self.ids[0],422),(self.ids[2],403)]:
    r=await self.client.post(f'/basketball/{self.chat}',headers=self.headers(),json={'client_id':str(uuid.uuid4()),'opponent_id':str(target)})
