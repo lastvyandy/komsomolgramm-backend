@@ -303,9 +303,17 @@ async def mark_dispatch_read(
     ))
     await db.commit()
     cursor = await db.get(SovietReadCursor, membership_id)
+    from app.services.privacy import audience
+    from app.models.models import Contact
+    rule=audience(current_comrade,"read_receipts")
+    allowed=None
+    if rule!="all":
+        allowed=[str(current_comrade.id)]
+        if rule=="contacts":
+            allowed += [str(p) for p in (await db.scalars(select(Contact.person_id).where(Contact.owner_id==current_comrade.id))).all()]
     try:
         await get_socket_manager().publish_dispatch(soviet_id, {
-            "type": "read", "reader_id": str(current_comrade.id),
+            "type": "read", "reader_id": str(current_comrade.id), "allowed_viewers": allowed,
             "message_id": str(cursor.message_id), "message_created_at": cursor.message_created_at.isoformat(),
         })
     except Exception:
@@ -661,8 +669,10 @@ async def read_receipts(soviet_id: uuid.UUID, current: Comrade = Depends(get_cur
     rows = (await db.execute(select(SovietMember.comrade_id, SovietReadCursor.message_id, SovietReadCursor.message_created_at)
         .outerjoin(SovietReadCursor, SovietReadCursor.membership_id == SovietMember.id)
         .where(SovietMember.soviet_id == soviet_id, SovietMember.comrade_id != current.id))).all()
+    from app.services.privacy import allows
     return [{"reader_id": str(person), "message_id": str(message) if message else None,
-             "message_created_at": created.isoformat() if created else None} for person, message, created in rows]
+             "message_created_at": created.isoformat() if created else None} for person, message, created in rows
+             if await allows(db,person,"read_receipts",current.id)]
 
 
 @router.get("/{soviet_id}/context/{dispatch_id}", response_model=list[DispatchOut])

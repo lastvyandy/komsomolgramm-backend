@@ -29,6 +29,7 @@ class Comrade(Base):
     callsign: Mapped[str] = mapped_column(String(100), nullable=False)
     bubble_color: Mapped[str | None] = mapped_column(String(16), nullable=True)
     avatar_revision: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    privacy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     bio: Mapped[str] = mapped_column(String(280), default="", server_default="", nullable=False)
     country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     nationality: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -285,3 +286,13 @@ class VoiceCall(Base):
     answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     caller_ice: Mapped[list] = mapped_column(JSON, default=list)
     callee_ice: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class StatusNote(Base):
+    __tablename__ = "status_notes"
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(unique=True, index=True, default=uuid.uuid4)
+    content: Mapped[str] = mapped_column(String(60), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True,
+        default=lambda: utc_now() + timedelta(hours=24))

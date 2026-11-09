@@ -10,7 +10,7 @@ sys.modules['app.services.push_notifications']=push
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy import select
+from sqlalchemy import select, event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 import fakeredis.aioredis
@@ -24,6 +24,10 @@ import app.core.redis
 
 db_path=tempfile.mktemp(suffix='.db')
 engine=create_async_engine('sqlite+aiosqlite:///'+db_path,poolclass=NullPool)
+@event.listens_for(engine.sync_engine,"connect")
+def sqlite_media_functions(connection,_):
+ connection.create_function("pg_advisory_xact_lock",1,lambda _:1)
+ connection.create_function("octet_length",1,lambda value:len(value) if value is not None else None)
 sessions=async_sessionmaker(engine,expire_on_commit=False)
 redis=fakeredis.aioredis.FakeRedis()
 app.core.redis.get_redis_client=lambda: redis
@@ -54,7 +58,7 @@ async def setup():
 async def http_checks():
  async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as c:
   # Profile galleries preserve photos and restrict primary changes to the owner.
-  photo_headers={**headers(0),'Content-Type':'image/jpeg'}
+  photo_headers={**headers(0),'Content-Type':'image/jpeg','X-Media-Storage':'device-v1'}
   for image in [bytes.fromhex('ffd8ff')+b'first'+bytes.fromhex('ffd9'),bytes.fromhex('ffd8ff')+b'second'+bytes.fromhex('ffd9')]:
    result=await c.put('/auth/me/avatar',headers=photo_headers,content=image);assert result.status_code==204,result.text
   photos=(await c.get('/auth/photos/'+str(ids[0]),headers=headers(1))).json();assert len(photos)==2,photos
@@ -78,8 +82,8 @@ async def http_checks():
   cursor=page.json()[0]['id']
   older=await c.get(f'/dispatches/{room}?limit=5&before_id={cursor}',headers=headers(0));assert older.status_code==200
   assert all(m['id']!=cursor for m in older.json())
-  bad=await c.post(f'/dispatches/{room}/attachments?name=a.jpg&reply_to_id={foreign}',headers={**headers(0),'Content-Type':'image/jpeg'},content=b'abc');assert bad.status_code==404,bad.text
-  uploaded=await c.post(f'/dispatches/{room}/attachments?name=a.jpg&reply_to_id={target}',headers={**headers(1),'Content-Type':'image/jpeg'},content=b'abc');assert uploaded.status_code==201,uploaded.text
+  bad=await c.post(f'/dispatches/{room}/attachments?name=a.jpg&reply_to_id={foreign}',headers={**headers(0),'Content-Type':'image/jpeg','X-Media-Storage':'device-v1'},content=b'abc');assert bad.status_code==404,bad.text
+  uploaded=await c.post(f'/dispatches/{room}/attachments?name=a.jpg&reply_to_id={target}',headers={**headers(1),'Content-Type':'image/jpeg','X-Media-Storage':'device-v1'},content=b'abc');assert uploaded.status_code==201,uploaded.text
   assert uploaded.json()['reply']['id']==str(target)
   # Read cursor advances, emits an event, and never regresses.
   assert (await c.put(f'/dispatches/{room}/read/{reply_id}',headers=headers(1))).status_code==204
@@ -107,7 +111,7 @@ async def http_checks():
   # Privacy is enforced server-side in both directions and survives heartbeats.
   assert (await c.put('/auth/me/presence-privacy',headers=headers(1),json={'show_last_seen':False})).status_code==200
   await c.post('/auth/presence',headers=headers(1),json={'session_id':s2,'active':True})
-  hidden=(await c.get('/auth/presence/'+str(ids[1]),headers=headers(0))).json();assert hidden=={'online':None,'last_seen':None,'hidden':True},hidden
+  hidden=(await c.get('/auth/presence/'+str(ids[1]),headers=headers(0))).json();assert {k:hidden[k] for k in ['online','last_seen','hidden']}=={'online':None,'last_seen':None,'hidden':True},hidden
   assert (await c.get('/auth/presence/'+str(ids[0]),headers=headers(1))).json()['hidden'] is True
   await c.put('/auth/me/presence-privacy',headers=headers(1),json={'show_last_seen':True})
   await c.post('/auth/presence',headers=headers(1),json={'session_id':s2,'active':False})

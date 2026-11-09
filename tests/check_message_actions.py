@@ -27,6 +27,7 @@ engine=create_async_engine('sqlite+aiosqlite:///'+db_path,poolclass=NullPool)
 @event.listens_for(engine.sync_engine, "connect")
 def sqlite_lock(connection, _):
  connection.create_function("pg_advisory_xact_lock", 1, lambda _: 1)
+ connection.create_function("octet_length", 1, lambda value: len(value) if value is not None else None)
 sessions=async_sessionmaker(engine,expire_on_commit=False)
 redis=fakeredis.aioredis.FakeRedis()
 app.core.redis.get_redis_client=lambda: redis
@@ -68,23 +69,23 @@ async def checks():
   assert (await c.get(f'/dispatches/{saved}',headers=headers(1))).status_code==403
   second=await post(f'/soviets/direct/{ids[1]}',who=1)
   assert second.json()['id']!=saved
-  upload=await c.post(f'/dispatches/{room}/attachments?name=test.jpg',headers={**headers(0),'Content-Type':'image/jpeg'},content=b'image-bytes')
+  upload=await c.post(f'/dispatches/{room}/attachments?name=test.jpg',headers={**headers(0),'Content-Type':'image/jpeg','X-Media-Storage':'device-v1'},content=b'image-bytes')
   assert upload.status_code==201,upload.text
   photo=upload.json()['id']
   payload={'message_ids':[str(reply_id),photo,str(target)],'target_chat_id':saved}
   result=await post(f'/dispatches/{room}/forward',payload)
+  assert result.status_code==409,result.text
+  # Device-owned attachments must be reuploaded by the client; mixed batches reject atomically.
+  result=await post(f'/dispatches/{room}/forward',{'message_ids':[str(reply_id),str(target)],'target_chat_id':saved})
   assert result.status_code==201,result.text
   copied=result.json()
-  assert len(copied)==3 and copied[0]['content']=='Original'
+  assert len(copied)==2 and copied[0]['content']=='Original'
   assert copied[0]['forwarded']['sender_name']=='User 0'
   assert copied[1]['forwarded']['sender_name']=='User 1'
-  copied_photo=copied[-1]['id']
-  assert (await c.get(f'/dispatches/{saved}/attachments/{copied_photo}',headers=headers(0))).content==b'image-bytes'
-  assert (await c.get(f'/dispatches/{saved}/attachments/{copied_photo}',headers=headers(1))).status_code==403
   bad=await post(f'/dispatches/{room}/forward',{'message_ids':[str(target),str(foreign)],'target_chat_id':saved})
   assert bad.status_code==404,bad.text
   history=await c.get(f'/dispatches/{saved}',headers=headers(0))
-  assert len(history.json())==3,history.text
+  assert len(history.json())==2,history.text
   no_access=await post(f'/dispatches/{room}/forward',{'message_ids':[str(target)],'target_chat_id':str(other_room)})
   assert no_access.status_code==403,no_access.text
   forbidden=await post(f'/dispatches/{room}/delete-messages',{'message_ids':[str(target),str(reply_id)],'for_everyone':True})
@@ -101,14 +102,13 @@ async def checks():
   gone=await post(f'/dispatches/{room}/delete-messages',{'message_ids':[str(target),photo],'for_everyone':True})
   assert gone.status_code==204,gone.text
   assert (await c.get(f'/dispatches/{room}/attachments/{photo}',headers=headers(1))).status_code==404
-  assert (await c.get(f'/dispatches/{saved}/attachments/{copied_photo}',headers=headers(0))).content==b'image-bytes'
   history=(await c.get(f'/dispatches/{saved}',headers=headers(0))).json()
-  assert len(history)==3 and history[-1]['forwarded']['sender_name']=='User 0'
+  assert len(history)==2 and history[-1]['forwarded']['sender_name']=='User 1'
   # Forwarding an existing forward preserves its original author.
   forwarded_again=await post(f'/dispatches/{saved}/forward',{'message_ids':[copied[1]['id']],'target_chat_id':str(direct_room)})
   assert forwarded_again.status_code==201,forwarded_again.text
   assert forwarded_again.json()[0]['forwarded']['sender_name']=='User 1'
-  print('PASS private and idempotent Saved Messages, batch forwards and attachment copies, original authors, permission checks, atomic rejection, personal and shared bulk deletion')
+  print('PASS private and idempotent Saved Messages, batch text forwards and device-owned media rejection, original authors, permission checks, atomic rejection, personal and shared bulk deletion')
 
 asyncio.run(setup())
 asyncio.run(checks())

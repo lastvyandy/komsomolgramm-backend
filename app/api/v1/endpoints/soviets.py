@@ -23,6 +23,10 @@ async def create_soviet(
     if soviet_in.soviet_type == SovietType.DIRECT:
         raise HTTPException(400, "Use the direct chat endpoint")
     member_ids = set(soviet_in.member_ids) - {current_comrade.id}
+    from app.services.privacy import allows
+    for person in member_ids:
+        if not await allows(db,person,"group_invites",current_comrade.id):
+            raise HTTPException(403,"Group invitations restricted by recipient")
     if len(member_ids) > 50:
         raise HTTPException(422, "At most 50 members can be added at creation")
     if member_ids:
@@ -200,6 +204,10 @@ async def add_soviet_members(
         raise HTTPException(403, "Direct chats cannot have additional members")
 
     requested = set(payload.member_ids) - {current_comrade.id}
+    from app.services.privacy import allows
+    for person in requested:
+        if not await allows(db,person,"group_invites",current_comrade.id):
+            raise HTTPException(403,"Group invitations restricted by recipient")
     if not requested:
         raise HTTPException(422, "Select at least one other member")
     active_ids = set((await db.scalars(
@@ -290,7 +298,8 @@ async def get_or_create_direct_soviet(
     # Serialize concurrent requests for the same unordered pair until commit.
     pair = ":".join(sorted((str(current_comrade.id), str(target_comrade_id))))
     lock_id = int.from_bytes(hashlib.sha256(pair.encode()).digest()[:8], "big", signed=True)
-    await db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+    if db.bind.dialect.name == "postgresql":
+        await db.execute(select(func.pg_advisory_xact_lock(lock_id)))
 
     # 2. Buscar si ya existe un Soviet de tipo DIRECT compartido entre ambos
     find_stmt = (

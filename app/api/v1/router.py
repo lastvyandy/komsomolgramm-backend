@@ -15,3 +15,9 @@ api_router.include_router(auto_delete.router, prefix="/auto-delete", tags=["Auto
 
 from app.api.v1.endpoints import calls
 api_router.include_router(calls.router, prefix="/calls", tags=["Voice calls"])
+
+from app.api.v1.endpoints import notes
+api_router.include_router(notes.router, prefix="/notes", tags=["Notes"])
+
+from app.api.v1.endpoints import privacy
+api_router.include_router(privacy.router, prefix="/privacy", tags=["Privacy"])

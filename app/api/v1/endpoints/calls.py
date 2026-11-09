@@ -91,6 +91,8 @@ async def start(payload:Start,current=Depends(get_current_comrade),db=Depends(ge
         .where(SovietMember.soviet_id==chat.id,Comrade.is_active.is_(True)).order_by(Comrade.id).with_for_update())).all()
     if len(members)!=2: raise HTTPException(422,"A call requires two participants")
     peer=next(p for p in members if p.id != current.id)
+    from app.services.privacy import allows
+    if not await allows(db, peer.id, "calls", current.id):raise HTTPException(403,"Calls restricted by recipient")
     existing=(await db.scalars(select(VoiceCall).where(VoiceCall.status.in_(["ringing","active"]),
         or_(VoiceCall.caller_id.in_([current.id,peer.id]),VoiceCall.callee_id.in_([current.id,peer.id]))))).all()
     for call in existing:

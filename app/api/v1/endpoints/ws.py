@@ -42,6 +42,7 @@ async def soviet_websocket_endpoint(websocket: WebSocket, soviet_id: uuid.UUID, 
         sender_callsign = membership.comrade.callsign
         sender_username = membership.comrade.username
 
+    websocket._comrade_id = str(comrade_id)
     await manager.connect(soviet_id, websocket)
     last_typing = 0.0
     last_buzz = 0.0

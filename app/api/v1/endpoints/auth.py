@@ -1,3 +1,4 @@
+from app.services.privacy import allows
 import uuid
 from datetime import date, datetime, timezone
 import re
@@ -168,6 +169,8 @@ async def set_app_activity(payload: AppUsageUpdate,
 @router.get("/app-icon/{comrade_id}")
 async def app_activity_icon(comrade_id: uuid.UUID, request: Request,
         viewer: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    if not await allows(db, comrade_id, "app_usage", viewer.id):
+        raise HTTPException(404, "No visible app icon")
     person = await db.get(Comrade, comrade_id)
     revision = person.public_most_used_app_icon_revision if person else None
     if revision is None:
@@ -417,6 +420,8 @@ async def get_avatar(
     current: Comrade = Depends(get_current_comrade),
     db: AsyncSession = Depends(get_async_db),
 ):
+    if not await allows(db, comrade_id, "photo", current.id):
+        raise HTTPException(404, "Profile photo not found")
     result = await db.execute(
         select(ComradeAvatar.image).join(Comrade).where(
             ComradeAvatar.comrade_id == comrade_id, Comrade.is_active.is_(True)
@@ -573,10 +578,11 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
     viewer = await db.get(ComradePresence, current.id)
     row = await db.get(ComradePresence, person_id)
     visible = (viewer is None or viewer.show_last_seen) and (row is None or row.show_last_seen)
+    visible = visible and await allows(db, person_id, "last_seen", current.id)
     redis = get_redis_client()
     count = await redis.zcount(f"presence:{person_id}", datetime.now(timezone.utc).timestamp(), "+inf")
     # Battery has its own explicit privacy switch, independent of last-seen sharing.
-    battery_hidden = row is not None and not row.show_battery
+    battery_hidden = (row is not None and not row.show_battery) or not await allows(db, person_id, "battery", current.id)
     battery = None
     if not battery_hidden:
         raw = await redis.get(f"battery:{person_id}")
@@ -596,7 +602,7 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
         except (KeyError, TypeError, ValueError):
             stale = True
     from app.services.sleep_schedule import in_sleep_window
-    sleeping = visible and not count and in_sleep_window(target.sleep_enabled,
+    sleeping = visible and not count and await allows(db, person_id, "sleep", current.id) and in_sleep_window(target.sleep_enabled,
         target.sleep_start, target.sleep_end, target.sleep_timezone, datetime.now(timezone.utc))
     return {"sleeping": bool(sleeping), "online": bool(count) if visible else None,
             "last_seen": row.last_seen if row and visible else None, "hidden": not visible,
@@ -609,6 +615,8 @@ async def get_presence(person_id: uuid.UUID, current: Comrade = Depends(get_curr
 
 @router.get("/photos/{person_id}")
 async def profile_photos(person_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    if not await allows(db, person_id, "photo", current.id):
+        raise HTTPException(404, "Profile photo not found")
     if not await db.scalar(select(Comrade.id).where(Comrade.id == person_id, Comrade.is_active.is_(True))):
         raise HTTPException(404, "User not found")
     rows = (await db.execute(select(ProfilePhoto.id, ProfilePhoto.created_at).where(ProfilePhoto.comrade_id == person_id).order_by(ProfilePhoto.created_at.desc(), ProfilePhoto.id.desc()))).all()
@@ -617,6 +625,8 @@ async def profile_photos(person_id: uuid.UUID, current: Comrade = Depends(get_cu
 
 @router.get("/photos/{person_id}/{photo_id}")
 async def profile_photo(person_id: uuid.UUID, photo_id: uuid.UUID, current: Comrade = Depends(get_current_comrade), db: AsyncSession = Depends(get_async_db)):
+    if not await allows(db, person_id, "photo", current.id):
+        raise HTTPException(404, "Profile photo not found")
     image = await db.scalar(select(ProfilePhoto.image).join(Comrade, Comrade.id == ProfilePhoto.comrade_id).where(ProfilePhoto.comrade_id == person_id, ProfilePhoto.id == photo_id, Comrade.is_active.is_(True)))
     if image is None:
         raise HTTPException(404, "Photo not found")

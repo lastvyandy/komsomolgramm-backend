@@ -45,4 +45,6 @@ async def get_current_comrade(
             detail="Este camarada ha sido suspendido de sus funciones."
         )
 
+    from app.services.privacy import load_viewer
+    await load_viewer(db, comrade.id)
     return comrade

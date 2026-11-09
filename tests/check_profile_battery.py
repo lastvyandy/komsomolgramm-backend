@@ -24,7 +24,7 @@ class ProfileBatteryChecks(unittest.IsolatedAsyncioTestCase):
         self.redis = fakeredis.aioredis.FakeRedis()
         self.redis_patch = patch("app.core.redis.get_redis_client", return_value=self.redis)
         self.redis_patch.start()
-        self.person = SimpleNamespace(id=uuid.uuid4(), is_active=True)
+        self.person = SimpleNamespace(id=uuid.uuid4(), is_active=True, privacy={}, sleep_enabled=False, sleep_start=1380, sleep_end=420, sleep_timezone="UTC")
         self.viewer = SimpleNamespace(id=uuid.uuid4(), is_active=True)
         self.db = SimpleNamespace(get=AsyncMock(return_value=None),
                                   execute=AsyncMock(), commit=AsyncMock())
@@ -35,7 +35,11 @@ class ProfileBatteryChecks(unittest.IsolatedAsyncioTestCase):
         await self.redis.aclose()
 
     async def profile(self, target_privacy=None, viewer_privacy=None):
-        self.db.get.side_effect = [self.person, viewer_privacy, target_privacy]
+        from app.models.models import Comrade
+        async def lookup(model,identifier):
+            if model is Comrade:return self.person if identifier==self.person.id else self.viewer
+            return target_privacy if identifier==self.person.id else viewer_privacy
+        self.db.get.side_effect = lookup
         return await auth.get_presence(self.person.id, self.viewer, self.db)
 
     async def store_battery(self, level=54, age=0):

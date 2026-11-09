@@ -39,6 +39,9 @@ class SovietSocketManager:
         message_text = json.dumps(payload)
 
         for ws in list(connections):
+            permitted=payload.get("allowed_viewers")
+            if permitted is not None and getattr(ws,"_comrade_id",None) not in permitted:
+                continue
             try:
                 await ws.send_text(message_text)
             except Exception:

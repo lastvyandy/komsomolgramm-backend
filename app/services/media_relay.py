@@ -26,6 +26,9 @@ async def register_recipients(db, message):
 
 async def cleanup_once():
     async with async_session_maker() as db:
+        from sqlalchemy import delete
+        from app.models.models import StatusNote
+        await db.execute(delete(StatusNote).where(StatusNote.expires_at <= utc_now()))
         await db.execute(update(DispatchAttachment).where(
             DispatchAttachment.expires_at <= utc_now(),
             DispatchAttachment.data.is_not(None)).values(data=None))
