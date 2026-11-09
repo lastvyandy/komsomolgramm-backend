@@ -16,6 +16,20 @@ class NoteChecks(RichMessageChecks):
   self.assertEqual((await self.feed(2)).json(),[])
   self.assertEqual((await self.client.get('/notes')).status_code,401)
   await self.publish('Reader note',1);self.assertEqual(len((await self.feed(0)).json()),1)
+ async def test_conditional_feed_changes_and_viewer_isolation(self):
+  await self.publish()
+  first=await self.feed(1);tag=first.headers['etag']
+  unchanged=await self.client.get('/notes',headers={**self.headers(1),'If-None-Match':tag})
+  self.assertEqual(unchanged.status_code,304);self.assertEqual(unchanged.content,b'')
+  hidden=await self.client.get('/notes',headers={**self.headers(2),'If-None-Match':tag})
+  self.assertEqual(hidden.status_code,200);self.assertEqual(hidden.json(),[])
+  await self.publish('Changed')
+  changed=await self.client.get('/notes',headers={**self.headers(1),'If-None-Match':tag})
+  self.assertEqual(changed.status_code,200);self.assertNotEqual(changed.headers['etag'],tag)
+  self.assertEqual(changed.json()[0]['content'],'Changed')
+  await self.client.delete('/notes/me',headers=self.headers())
+  deleted=await self.client.get('/notes',headers={**self.headers(1),'If-None-Match':changed.headers['etag']})
+  self.assertEqual(deleted.status_code,200);self.assertEqual(deleted.json(),[])
  async def test_replacement_delete_and_validation(self):
   first=(await self.publish()).json()['id'];second=(await self.publish('🔥'*60)).json()['id'];self.assertNotEqual(first,second)
   self.assertEqual(len((await self.feed()).json()),1)

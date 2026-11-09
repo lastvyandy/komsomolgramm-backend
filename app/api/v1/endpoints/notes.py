@@ -1,6 +1,6 @@
-import uuid
+import uuid, hashlib, json
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, exists, or_, and_, func, delete
 from app.api.deps import get_current_comrade
@@ -27,15 +27,23 @@ class NoteIn(BaseModel):
         return value
 
 @router.get("")
-async def feed(current=Depends(get_current_comrade),db=Depends(get_async_db)):
+async def feed(request: Request, current=Depends(get_current_comrade),db=Depends(get_async_db)):
     rule=func.coalesce(Comrade.privacy["notes"].as_string(),"contacts")
     visibility=or_(StatusNote.owner_id==current.id,rule=="all",and_(rule=="contacts",exists(
         select(Contact.owner_id).where(Contact.owner_id==StatusNote.owner_id,Contact.person_id==current.id))))
     rows=(await db.execute(select(StatusNote,Comrade).join(Comrade,Comrade.id==StatusNote.owner_id).where(
         visibility,StatusNote.expires_at>utc_now(),Comrade.is_active.is_(True))
         .order_by((StatusNote.owner_id == current.id).desc(), StatusNote.created_at.desc()).limit(200))).all()
-    return [{"id":str(n.id),"owner_id":str(n.owner_id),"name":p.callsign,"content":n.content,
+    result = [{"id":str(n.id),"owner_id":str(n.owner_id),"name":p.callsign,"content":n.content,
         "expires_at":n.expires_at.isoformat()} for n,p in rows if await can_see(db,n,current.id)]
+
+    # Per-viewer content fingerprint includes privacy filtering, expiry and profile names.
+    body = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache", "Vary": "Authorization"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
 
 @router.put("/me")
 async def publish(payload:NoteIn,current=Depends(get_current_comrade),db=Depends(get_async_db)):
