@@ -20,6 +20,10 @@ class BasketballChecks(RichMessageChecks):
  async def get_game(self,id,i=0):return await self.client.get(f'/basketball/{self.chat}/{id}',headers=self.headers(i))
  async def throw(self,id,i=0,body=None):
   return await self.client.post(f'/basketball/{self.chat}/{id}/shot',headers=self.headers(i),json=body)
+ async def test_availability_is_authenticated(self):
+  r=await self.client.get('/basketball/status',headers=self.headers())
+  self.assertEqual(r.status_code,200,r.text);self.assertTrue(r.json()['available'])
+  self.assertEqual((await self.client.get('/basketball/status')).status_code,401)
  async def test_membership_target_and_authorization(self):
   for target,expected in [(self.ids[0],422),(self.ids[2],403)]:
    r=await self.client.post(f'/basketball/{self.chat}',headers=self.headers(),json={'client_id':str(uuid.uuid4()),'opponent_id':str(target)})

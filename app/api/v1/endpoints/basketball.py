@@ -97,6 +97,10 @@ async def save(db,row):
         if sender:await publish(result,sender)
     return public(row)
 
+@router.get('/status')
+async def availability(current=Depends(get_current_comrade)):
+    return {'available':True,'version':1}
+
 @router.post('/{chat}',status_code=201)
 async def create(chat:uuid.UUID,payload:Challenge,current=Depends(get_current_comrade),db=Depends(get_async_db)):
     await require_membership(db,chat,current)

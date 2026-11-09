@@ -191,6 +191,13 @@ class Contact(Base):
 
 
 
+class AutoContactEnrollment(Base):
+    __tablename__ = "auto_contact_enrollments"
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class ComradePresence(Base):
     __tablename__ = "comrade_presence"
     comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
@@ -302,3 +309,9 @@ class StatusNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True,
         default=lambda: utc_now() + timedelta(hours=24))
+
+
+@event.listens_for(Session, "after_flush")
+def auto_enroll_contacts(session, flush_context):
+    from app.services.auto_contacts import enroll_after_messages
+    enroll_after_messages(session)

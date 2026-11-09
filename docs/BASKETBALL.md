@@ -59,3 +59,40 @@ Show notes control in the same place. The existing local preference is preserved
 Contacts without a visible active note are still shown with a No note label;
 privacy rules are unchanged and no expired/hidden note text is exposed. Tapping a
 contact with no note opens their profile; an active note keeps replies/reactions.
+
+## Missing backend route / automatic contacts (Android 1.10.1 / 23)
+
+On 2026-11-09, the public deployment OpenAPI contained location search but no
+basketball routes. Updating GitHub source had not deployed the basketball backend.
+Android now checks authenticated `/api/v1/basketball/status` before inviting and
+reports missing backend support separately from connection/session/permission errors.
+
+On the VPS, in the existing checkout:
+
+```sh
+cd /opt/komsomolgram-backend
+git pull --ff-only origin main
+python3 tools/update-running-api.py --dry-run
+python3 tools/update-running-api.py
+```
+
+The helper inspects the existing API container and reuses its Compose project,
+working directory, configuration files and recorded environment files. It rebuilds
+and recreates only the API with `--no-deps`; it never removes containers/volumes or
+prints environment contents. Missing original configuration files cause it to abort.
+It verifies the new basketball route inside the API container after restart.
+The helper has not been executed on the VPS by the assistant.
+
+A transaction-level message hook adds the other participant to the sender's
+contacts after at least three distinct sent messages in direct chats. Received
+messages, groups, saved messages and generated basketball results do not count.
+Text, attachments, forwards and structured messages use the same hook. Old
+conversation history counts when the next real message is sent. This does not
+retroactively enroll every historical conversation during deployment.
+
+An enrollment marker prevents later sends from undoing manual contact removal.
+New markers/contacts roll back if the message rolls back. PostgreSQL serializes
+concurrent enrollment checks with a transaction advisory lock. The new enrollment
+table is created by the existing `Base.metadata.create_all` startup path; no
+existing messages or tables are rewritten. `tests/check_auto_contacts.py` checks
+thresholds, directionality, retries, rollback, groups, system results and removal.
