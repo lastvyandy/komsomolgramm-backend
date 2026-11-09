@@ -1,8 +1,10 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
 
+    TELEGRAM_STICKER_BOT_TOKEN: SecretStr = SecretStr("")
     PROJECT_NAME: str = "Komsomolgram API"
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str

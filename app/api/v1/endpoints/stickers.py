@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,parse_qs
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -25,39 +25,59 @@ class PackRequest(BaseModel):
     link: str = Field(min_length=1, max_length=240)
 
 def pack_name(link):
-    value = link.strip()
-    if value.startswith(("t.me/", "telegram.me/")):
-        value = "https://"+value
+    value=link.strip()
+    if value.startswith(("t.me/","telegram.me/")):value="https://"+value
     if "://" in value:
-        parsed = urlsplit(value)
-        if parsed.scheme != "https" or parsed.hostname not in ("t.me", "telegram.me"):
-            raise HTTPException(422, "Expected a Telegram sticker-pack link")
-        prefix = "/addstickers/"
-        if not parsed.path.startswith(prefix):
-            raise HTTPException(422, "Expected an addstickers link")
-        value = parsed.path[len(prefix):].rstrip("/")
-    if not re.fullmatch(r"[a-zA-Z0-9_]{1,64}", value):
-        raise HTTPException(422, "Invalid sticker pack name")
+        try:
+            parsed=urlsplit(value)
+            port=parsed.port
+        except ValueError:raise HTTPException(422,"Invalid Telegram link")
+        if parsed.username or parsed.password:raise HTTPException(422,"Invalid Telegram link")
+        if parsed.scheme=="tg" and parsed.hostname=="addstickers":
+            values=parse_qs(parsed.query).get("set",[])
+            if len(values)!=1:raise HTTPException(422,"Expected a sticker pack")
+            value=values[0]
+        elif parsed.scheme=="https" and parsed.hostname in ("t.me","telegram.me") and port in (None,443):
+            prefix="/addstickers/"
+            if not parsed.path.startswith(prefix):raise HTTPException(422,"Expected an addstickers link")
+            value=parsed.path[len(prefix):].rstrip("/")
+        else:raise HTTPException(422,"Expected a Telegram sticker-pack link")
+    if not re.fullmatch(r"[a-zA-Z0-9_]{1,64}",value):raise HTTPException(422,"Invalid sticker pack name")
     return value
 
 def token():
-    value = os.environ.get("TELEGRAM_STICKER_BOT_TOKEN", "").strip()
-    if not value:
-        raise HTTPException(503, "Telegram sticker import is not configured")
+    value=os.environ.get("TELEGRAM_STICKER_BOT_TOKEN",settings.TELEGRAM_STICKER_BOT_TOKEN.get_secret_value()).strip()
+    if not value:raise HTTPException(503,"Telegram sticker import is not configured")
     return value
 
-async def telegram_json(method, params):
-    secret = token()
+@router.get("/telegram/status")
+async def import_status(current:Comrade=Depends(get_current_comrade)):
+    try:token();configured=True
+    except HTTPException:configured=False
+    return {"configured":configured}
+
+async def telegram_json(method,params):
+    secret=token()
     try:
-        async with _network, httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
-            result = await client.get(f"https://api.telegram.org/bot{secret}/{method}", params=params)
-            result.raise_for_status()
-            body = result.json()
+        async with _network,httpx.AsyncClient(timeout=20,follow_redirects=False) as client:
+            async with client.stream("GET",f"https://api.telegram.org/bot{secret}/{method}",params=params) as result:
+                if result.status_code==401:raise HTTPException(424,"Invalid Telegram bot configuration")
+                if result.status_code==429:raise HTTPException(429,"Telegram rate limit; try again shortly")
+                if result.status_code==400 and method=="getStickerSet":raise HTTPException(404,"Sticker pack not found")
+                result.raise_for_status();data=bytearray()
+                async for chunk in result.aiter_bytes():
+                    if len(data)+len(chunk)>2*1024*1024:raise ValueError("Too large")
+                    data.extend(chunk)
+            body=json.loads(data)
             if not body.get("ok"):
-                raise ValueError("Telegram rejected the pack")
+                code=body.get("error_code")
+                if code==401:raise HTTPException(424,"Invalid Telegram bot configuration")
+                if code==429:raise HTTPException(429,"Telegram rate limit")
+                if code==400 and method=="getStickerSet":raise HTTPException(404,"Sticker pack not found")
+                raise ValueError("Telegram rejected request")
             return body["result"]
-    except (httpx.HTTPError, ValueError, KeyError):
-        raise HTTPException(502, "Could not retrieve this Telegram pack")
+    except (httpx.HTTPError,ValueError,KeyError,TypeError):
+        raise HTTPException(502,"Could not retrieve this Telegram pack")
 
 def make_ticket(file_id, owner):
     body = base64.urlsafe_b64encode(json.dumps(
@@ -85,7 +105,7 @@ async def telegram_pack(payload: PackRequest, current: Comrade = Depends(get_cur
     files = []
     for sticker in result.get("stickers", [])[:120]:
         poster = sticker.get("is_animated") or sticker.get("is_video")
-        file_id = (sticker.get("thumbnail") or {}).get("file_id") if poster else sticker.get("file_id")
+        file_id = (sticker.get("thumbnail") or sticker.get("thumb") or {}).get("file_id") if poster else sticker.get("file_id")
         if file_id:
             files.append({"ticket": make_ticket(file_id, current.id), "poster": bool(poster)})
     if not files:
@@ -99,7 +119,7 @@ async def telegram_file(ticket: str, current: Comrade = Depends(get_current_comr
     file_id = read_ticket(ticket, current.id)
     metadata = await telegram_json("getFile", {"file_id": file_id})
     path = metadata.get("file_path", "")
-    if not re.fullmatch(r"(?:stickers|thumbnails|photos)/[a-zA-Z0-9_./-]+", path) or ".." in path:
+    if not isinstance(path,str) or len(path)>512 or not re.fullmatch(r"(?:[a-zA-Z0-9_-]+/)+[a-zA-Z0-9_.-]+",path) or any(p in (".","..") for p in path.split("/")):
         raise HTTPException(502, "Invalid Telegram file")
     try:
         async with _network, httpx.AsyncClient(timeout=30, follow_redirects=False) as client:

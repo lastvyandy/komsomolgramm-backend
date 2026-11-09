@@ -67,6 +67,25 @@ class StickerImportChecks(RelationshipChecks):
   broken=ticket[:-1]+("0" if ticket[-1]!="0" else "1")
   self.assertEqual((await self.client.get("/stickers/telegram/file",params={"ticket":broken},headers=self.headers())).status_code,403)
 
+ async def test_deep_links_status_and_bad_ports(self):
+  self.assertEqual((await self.manifest("tg://addstickers?set=PublicPack")).status_code,200)
+  self.assertEqual((await self.manifest("https://t.me:invalid/addstickers/PublicPack")).status_code,422)
+  r=await self.client.get('/stickers/telegram/status',headers=self.headers());self.assertEqual(r.json(),{'configured':True});self.assertNotIn('test-token',r.text)
+  with patch.dict(os.environ,{'TELEGRAM_STICKER_BOT_TOKEN':''}):
+   r=await self.client.get('/stickers/telegram/status',headers=self.headers());self.assertEqual(r.json(),{'configured':False})
+ async def test_upstream_errors_have_actionable_status_and_no_token(self):
+  for status,expected in [(401,424),(400,404),(429,429),(503,502)]:
+   self.transport.handler=lambda request,status=status:httpx.Response(status,json={'ok':False})
+   r=await self.manifest();self.assertEqual(r.status_code,expected,r.text);self.assertNotIn('test-token',r.text)
+ async def test_telegram_paths_are_not_limited_to_three_old_directories(self):
+  original=self.transport.handler
+  def handler(request):
+   if request.url.path.endswith('/getFile'):return httpx.Response(200,json={'ok':True,'result':{'file_path':'documents/sticker.webp'}})
+   return original(request)
+  self.transport.handler=handler
+  ticket=(await self.manifest()).json()['files'][0]['ticket']
+  r=await self.client.get('/stickers/telegram/file',params={'ticket':ticket},headers=self.headers());self.assertEqual(r.status_code,200,r.text)
+
 if __name__=="__main__":
  suite=unittest.TestSuite(StickerImportChecks(n) for n in StickerImportChecks.__dict__ if n.startswith("test_"))
  result=unittest.TextTestRunner(verbosity=2).run(suite)
