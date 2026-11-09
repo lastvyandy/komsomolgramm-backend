@@ -90,3 +90,35 @@ powershell -ExecutionPolicy Bypass -File .\tools\publish-update.ps1 -VersionCode
 Verify current releases first; code 15 must not already be published. APKs built by
 the assistant use a different debug signing identity and must not replace testers'
 installed apps. Publishing and VPS deployment are distinct from pushing source.
+
+
+## Voice repair / Android 1.10.4 (26)
+
+The previous Compose configuration included `--no-loopback-peers`, which is absent
+from coturn 4.6.3's supported options. Remove it; the explicit loopback/private
+address denial rules remain. TURN now ignores image default config (`-n`), logs to
+stdout and uses one relay worker. This fixes a configuration defect, but the actual
+VPS logs and a real two-device call must still be checked.
+
+From the existing VPS checkout, preserving the running stack configuration:
+
+```sh
+git pull --ff-only origin main
+python3 tools/update-running-api.py --container komsomolgram-backend-komsomol_api-1 --with-turn
+docker logs --tail=50 komsomolgram-backend-komsomol_turn-1
+```
+
+Do not paste `.env`, shared secrets, credentials or full SDP into chat. If TURN
+still restarts, inspect its logs before assuming an ICE/client fault. UDP/TCP 3478
+and UDP 49160–49200 must be reachable through the VPS/provider firewall. This
+setup still does not provide TURN TLS/443 for networks that block those ports.
+
+Android negotiates mono Opus at at most 24 kbit/s encoded audio, enables DTX and
+in-band FEC, and bounds the sender encoding bitrate. This is a codec target, not a
+cap on total network traffic including RTP/UDP/DTLS/relay overhead. No video is
+created. WebRTC initialization is done once per process; per-call resources are
+still disposed. Connected signaling polls every 5 seconds (previously 1 second),
+with faster setup polling, acknowledged SDP sent once and incremental ICE
+candidate responses. The default zero cursor preserves older clients. Audio
+continues over WebRTC and does not wait for the HTTP signaling heartbeat.
+No measured CPU/battery savings or successful VPS call is claimed without testing.

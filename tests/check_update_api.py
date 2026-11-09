@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 SCRIPT=Path(__file__).resolve().parents[1]/'tools/update-running-api.py'
 class UpdateApiChecks(unittest.TestCase):
- def exercise(self,dry=False,missing=False):
+ def exercise(self,dry=False,missing=False,turn=False):
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory);files=[root/'compose.vps.yml',root/'compose.https.yml',root/'compose.calls.yml']
    for file in files:file.write_text('services: {}')
@@ -16,15 +16,22 @@ class UpdateApiChecks(unittest.TestCase):
    calls=[]
    def run(command,**kwargs):
     calls.append(command)
+    if command[-3:]==['ps','-q','komsomol_turn']:return subprocess.CompletedProcess(command,0,'turn-id','')
+    if command==['docker','inspect','turn-id']:return subprocess.CompletedProcess(command,0,json.dumps([{'State':{'Status':'running'},'RestartCount':0}]),'')
     if command[:2]==['docker','inspect']:return subprocess.CompletedProcess(command,0,json.dumps([{'Config':{'Labels':labels}}]),'')
     return subprocess.CompletedProcess(command,0,'','')
    output=io.StringIO()
-   with patch('subprocess.run',side_effect=run),patch('sys.argv',[str(SCRIPT)]+(['--dry-run'] if dry else [])),contextlib.redirect_stdout(output):
+   with patch('subprocess.run',side_effect=run),patch('sys.argv',[str(SCRIPT)]+(['--dry-run'] if dry else [])+(['--with-turn'] if turn else [])),contextlib.redirect_stdout(output),patch('time.sleep'):
     if missing:
      with self.assertRaises(SystemExit):runpy.run_path(str(SCRIPT),run_name='__main__')
     else:runpy.run_path(str(SCRIPT),run_name='__main__')
    self.assertNotIn('do-not-print',output.getvalue())
    return calls,files
+ def test_turn_update_preserves_original_stack(self):
+  calls,_=self.exercise(turn=True)
+  self.assertEqual(calls[1][-2:],['komsomol_api','komsomol_turn'])
+  self.assertIn('--no-deps',calls[1])
+  self.assertIn(['docker','inspect','turn-id'],calls)
  def test_dry_run_has_no_mutation(self):
   calls,_=self.exercise(dry=True);self.assertEqual(len(calls),1)
  def test_original_project_files_and_environment_are_preserved(self):

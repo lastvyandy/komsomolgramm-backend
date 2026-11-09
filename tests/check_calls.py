@@ -45,6 +45,13 @@ class CallChecks(RichMessageChecks):
   self.assertIsNone((await self.client.get('/calls/active',headers=self.headers(1))).json())
   async with self.sessions() as db:
    call=await db.get(VoiceCall,uuid.UUID(id));self.assertEqual(call.status,'missed');self.assertIsNone(call.offer)
+ async def test_signal_cursor_reduces_repeated_payload(self):
+  id=(await self.start()).json()['id'];await self.action(id,'accept',1)
+  candidate={'sdpMid':'0','sdpMLineIndex':0,'sdp':'candidate:first'}
+  await self.signal(id,candidates=[candidate])
+  self.assertEqual(len((await self.signal(id,1)).json()['candidates']),1)
+  self.assertEqual((await self.signal(id,1,candidate_offset=1)).json()['candidates'],[])
+  self.assertEqual((await self.signal(id,1,candidate_offset=-1)).status_code,422)
  async def test_signals_bounded_and_audio_only(self):
   id=(await self.start()).json()['id']
   self.assertEqual((await self.signal(id,sdp='v=0\r\nm=video 9')).status_code,422)

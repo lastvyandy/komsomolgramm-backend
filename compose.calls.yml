@@ -8,6 +8,10 @@ services:
     restart: unless-stopped
     network_mode: host
     command:
+      - -n
+      - --log-file=stdout
+      - --simple-log
+      - --relay-threads=1
       - --no-cli
       - --no-tls
       - --no-dtls
@@ -20,7 +24,6 @@ services:
       - --min-port=49160
       - --max-port=49200
       - --no-multicast-peers
-      - --no-loopback-peers
       - --denied-peer-ip=10.0.0.0-10.255.255.255
       - --denied-peer-ip=172.16.0.0-172.31.255.255
       - --denied-peer-ip=192.168.0.0-192.168.255.255

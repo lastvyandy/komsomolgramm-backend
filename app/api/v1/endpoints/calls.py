@@ -134,6 +134,7 @@ class Candidate(BaseModel):
     sdpMLineIndex: int = Field(ge=0,le=10)
     sdp: str = Field(min_length=1,max_length=2048)
 class Signal(BaseModel):
+    candidate_offset: int = Field(default=0,ge=0,le=256)
     sdp: str | None = Field(default=None,max_length=65536)
     candidates: list[Candidate] = Field(default_factory=list,max_length=32)
 
@@ -162,5 +163,5 @@ async def signal(identifier:uuid.UUID,payload:Signal,current=Depends(get_current
     else:call.callee_seen=utc_now()
     peer=await db.get(Comrade,call.callee_id if caller else call.caller_id)
     result=public(call,current.id,peer)
-    result.update(sdp=call.answer if caller else call.offer,candidates=call.callee_ice if caller else call.caller_ice)
+    result.update(sdp=call.answer if caller else call.offer,candidates=(call.callee_ice if caller else call.caller_ice)[payload.candidate_offset:])
     await db.commit();return result
