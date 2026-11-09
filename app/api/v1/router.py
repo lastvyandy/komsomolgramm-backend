@@ -24,3 +24,6 @@ api_router.include_router(privacy.router, prefix="/privacy", tags=["Privacy"])
 
 from app.api.v1.endpoints import locations
 api_router.include_router(locations.router, prefix="/locations", tags=["Location search"])
+
+from app.api.v1.endpoints import basketball
+api_router.include_router(basketball.router, prefix="/basketball", tags=["Basketball challenges"])
