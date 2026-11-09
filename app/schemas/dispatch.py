@@ -18,6 +18,8 @@ class AttachmentOut(BaseModel):
     expires_at: datetime | None = None
     is_sticker: bool = False
     is_round_video: bool = False
+    view_once: bool = False
+    opened: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

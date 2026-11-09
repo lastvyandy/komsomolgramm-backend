@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI):
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS sleep_start INTEGER NOT NULL DEFAULT 1380")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS sleep_end INTEGER NOT NULL DEFAULT 420")
         await conn.exec_driver_sql("ALTER TABLE comrades ADD COLUMN IF NOT EXISTS sleep_timezone VARCHAR(80) NOT NULL DEFAULT 'UTC'")
+        await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ADD COLUMN IF NOT EXISTS view_once BOOLEAN NOT NULL DEFAULT false")
         await conn.exec_driver_sql("ALTER TABLE dispatch_attachments ADD COLUMN IF NOT EXISTS is_round_video BOOLEAN NOT NULL DEFAULT false")
 
     configure_push()

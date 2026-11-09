@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, undefer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -145,7 +145,7 @@ async def pending_media(include_audio: bool = True,
         AttachmentRecipient.downloaded.is_(False),
         DispatchAttachment.expires_at > utc_now(),
         DispatchAttachment.data.is_not(None),
-        Dispatch.is_purged.is_(False), visible_to(current.id))
+        Dispatch.is_purged.is_(False), DispatchAttachment.view_once.is_(False), visible_to(current.id))
     if not include_audio:
         statement = statement.where(~DispatchAttachment.mime_type.startswith("audio/"))
     rows = (await db.execute(statement.order_by(Dispatch.created_at).limit(100))).all()
@@ -161,6 +161,8 @@ async def media_received(soviet_id: uuid.UUID, dispatch_id: uuid.UUID,
         DispatchAttachment.dispatch_id == dispatch_id, Dispatch.soviet_id == soviet_id).with_for_update())
     if attachment is None:
         raise HTTPException(404, "Attachment not found")
+    if attachment.view_once:
+        raise HTTPException(409,"Use the one-time viewer")
     recipient = await db.get(AttachmentRecipient, (dispatch_id, current.id))
     if recipient is not None:
         recipient.downloaded = True
@@ -183,6 +185,8 @@ async def message_metadata(soviet_id: uuid.UUID, dispatch_id: uuid.UUID,
         Dispatch.is_purged.is_(False), visible_to(current.id)))
     if message is None:
         raise HTTPException(404, "Message not found")
+    from app.services.view_once import annotate_opened
+    await annotate_opened(db,[message],current.id)
     return message
 
 
@@ -230,6 +234,8 @@ async def get_soviet_dispatches(
     )
     result = await db.execute(stmt)
     dispatches = result.scalars().all()
+    from app.services.view_once import annotate_opened
+    await annotate_opened(db,dispatches,current_comrade.id)
 
     # Revertir para entregar en orden cronológico (los más antiguos primero)
     replies = await reply_summaries(db, soviet_id, {m.reply_to_id for m in dispatches if m.reply_to_id})
@@ -531,6 +537,7 @@ async def require_membership(db: AsyncSession, soviet_id: uuid.UUID, comrade: Co
 def attachment_query(soviet_id: uuid.UUID, viewer_id: uuid.UUID):
     return select(DispatchAttachment).join(Dispatch).where(
         Dispatch.soviet_id == soviet_id, Dispatch.is_purged.is_(False), visible_to(viewer_id),
+        DispatchAttachment.view_once.is_(False),
     )
 
 
@@ -542,6 +549,7 @@ async def send_attachment(
     reply_to_id: uuid.UUID | None = Query(default=None),
     is_sticker: bool = Query(default=False),
     is_round_video: bool = Query(default=False),
+    view_once: bool = Query(default=False),
     forward_from_id: uuid.UUID | None = Query(default=None),
     client_id: uuid.UUID | None = Query(default=None),
     current_comrade: Comrade = Depends(get_current_comrade),
@@ -563,6 +571,12 @@ async def send_attachment(
     document_type = re.fullmatch(r"(?:application|text)/[a-z0-9][a-z0-9.+_-]{0,66}", mime_type)
     if mime_type not in ATTACHMENT_TYPES and not document_type:
         raise HTTPException(415, "Unsupported attachment type")
+    if view_once:
+        if mime_type not in ("image/jpeg","image/png","image/webp") or is_sticker or is_round_video:
+            raise HTTPException(422,"View once supports still photos only")
+        recipients=await db.scalar(select(func.count()).select_from(SovietMember).where(
+            SovietMember.soviet_id==soviet_id,SovietMember.comrade_id!=current_comrade.id))
+        if not recipients:raise HTTPException(422,"Select a recipient for view once")
     data = bytearray()
     async for chunk in request.stream():
         if len(data) + len(chunk) > MAX_ATTACHMENT_BYTES:
@@ -586,9 +600,12 @@ async def send_attachment(
         if source is None:
             raise HTTPException(404, "Forward source unavailable")
         await require_membership(db, source.soviet_id, current_comrade)
+        source_attachment=await db.get(DispatchAttachment,source.id)
+        if source_attachment and source_attachment.view_once:
+            raise HTTPException(403,"View once media cannot be forwarded")
         forwarded = DispatchForward(sender_name=source.forwarded.sender_name if source.forwarded else
                                     source.sender.callsign if source.sender else "Camarada")
-    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data), is_sticker=is_sticker, is_round_video=is_round_video)
+    attachment = DispatchAttachment(name=name, mime_type=mime_type, data=bytes(data), is_sticker=is_sticker, is_round_video=is_round_video, view_once=view_once)
     dispatch = Dispatch(
         id=client_id or uuid.uuid4(),
         soviet_id=soviet_id, sender=current_comrade, attachment=attachment, reply_to_id=reply_id, forwarded=forwarded,
@@ -770,3 +787,55 @@ async def delete_messages(soviet_id: uuid.UUID, payload: DeleteMessages,
                 logger.exception("Batch deletion stored but live delivery failed")
     return Response(status_code=204)
 
+
+
+@router.post("/{soviet_id}/attachments/{dispatch_id}/open-once")
+async def open_once(soviet_id:uuid.UUID,dispatch_id:uuid.UUID,
+                    current:Comrade=Depends(get_current_comrade),db:AsyncSession=Depends(get_async_db)):
+    await require_membership(db,soviet_id,current)
+    row=(await db.execute(select(DispatchAttachment,Dispatch.sender_id).join(Dispatch,
+        Dispatch.id==DispatchAttachment.dispatch_id).options(undefer(DispatchAttachment.data)).where(
+        DispatchAttachment.dispatch_id==dispatch_id,Dispatch.soviet_id==soviet_id,
+        Dispatch.is_purged.is_(False),visible_to(current.id)).with_for_update())).one_or_none()
+    if row is None:raise HTTPException(404,"Photo not found")
+    attachment,sender=row
+    if not attachment.view_once:raise HTTPException(422,"Not view once media")
+    if sender==current.id:raise HTTPException(403,"Sender cannot reopen view once media")
+    recipient=await db.get(AttachmentRecipient,(dispatch_id,current.id))
+    if recipient is None:raise HTTPException(403,"Not an original recipient")
+    expires=attachment.expires_at
+    if expires.tzinfo is None:expires=expires.replace(tzinfo=timezone.utc)
+    if recipient.downloaded or attachment.data is None or expires<=utc_now():
+        raise HTTPException(410,"Photo opened or expired")
+    # Consume in the locked SQL transaction before returning bytes. Lost responses
+    # cannot be retried: at-most-once access is intentional, including across devices.
+    content=attachment.data
+    claimed=await db.scalar(update(AttachmentRecipient).where(
+        AttachmentRecipient.dispatch_id==dispatch_id,AttachmentRecipient.comrade_id==current.id,
+        AttachmentRecipient.downloaded.is_(False)).values(downloaded=True).returning(AttachmentRecipient.dispatch_id))
+    if claimed is None:raise HTTPException(410,"Photo already opened")
+    await db.flush()
+    remaining=await db.scalar(select(func.count()).select_from(AttachmentRecipient).where(
+        AttachmentRecipient.dispatch_id==dispatch_id,AttachmentRecipient.downloaded.is_(False)))
+    if not remaining:attachment.data=None
+    await db.commit()
+    from app.services.privacy import allows
+    allowed=[str(current.id)]
+    if sender and await allows(db,current.id,"read_receipts",sender):allowed.append(str(sender))
+    try:
+        await get_socket_manager().publish_dispatch(soviet_id,{
+            "type":"view_once_opened","id":str(dispatch_id),"allowed_viewers":allowed})
+    except Exception:logger.exception("View once consumed; receipt will synchronize from history")
+    return Response(content,media_type=attachment.mime_type,headers={
+        "Cache-Control":"no-store, max-age=0","Pragma":"no-cache","X-Content-Type-Options":"nosniff"})
+
+
+@router.post("/{soviet_id}/view-once-photo",response_model=DispatchOut,status_code=201)
+async def send_once_photo(soviet_id:uuid.UUID,request:Request,
+                          name:str=Query(min_length=1,max_length=180),
+                          reply_to_id:uuid.UUID|None=None,client_id:uuid.UUID|None=None,
+                          current:Comrade=Depends(get_current_comrade),db:AsyncSession=Depends(get_async_db)):
+    # A dedicated route fails closed against older servers that ignore unknown flags.
+    return await send_attachment(soviet_id=soviet_id,request=request,name=name,reply_to_id=reply_to_id,
+        is_sticker=False,is_round_video=False,view_once=True,forward_from_id=None,
+        client_id=client_id,current_comrade=current,db=db)

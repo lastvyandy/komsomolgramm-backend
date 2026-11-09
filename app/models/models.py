@@ -173,6 +173,12 @@ class DispatchAttachment(Base):
     mime_type: Mapped[str] = mapped_column(String(80))
     data: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: utc_now() + timedelta(hours=24), nullable=False)
+    view_once: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
+
+    @property
+    def opened(self):
+        return getattr(self,"_opened_for_viewer",False)
+
     is_round_video: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
     is_sticker: Mapped[bool] = mapped_column(default=False, server_default="false", nullable=False)
 
