@@ -4,6 +4,19 @@ from urllib.parse import urlsplit, parse_qs
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+ARTWORK_HOSTS = {"i.scdn.co", "image-cdn-ak.spotifycdn.com", "image-cdn-fa.spotifycdn.com",
+    "i.ytimg.com", "img.youtube.com", "lh3.googleusercontent.com",
+    "avatars.yandex.net", "avatars.mds.yandex.net", "avatars.mds.yandex.com"}
+
+def safe_artwork_url(value):
+    if not isinstance(value, str) or len(value) > 1024: return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme == "https" and parsed.hostname in ARTWORK_HOSTS and not parsed.username and not parsed.password and parsed.port in (None,443):
+            return value
+    except ValueError: pass
+    return None
+
 def canonical_song_link(value: str) -> tuple[str, str]:
     value = value.strip()
     if re.search(r"[\x00-\x20\x7f]", value):
@@ -30,6 +43,14 @@ class FavoriteSongInput(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     artist: str = Field(min_length=1, max_length=100)
     url: str = Field(min_length=1, max_length=1024)
+    artwork_url: str | None = None
+
+    @field_validator("artwork_url")
+    @classmethod
+    def validate_artwork(cls, value):
+        if value is not None and safe_artwork_url(value) is None:
+            raise ValueError("Invalid artwork URL")
+        return value
 
     @field_validator("title", "artist", mode="before")
     @classmethod

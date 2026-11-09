@@ -25,6 +25,14 @@ router = APIRouter()
 
 from app.schemas.favorite_song import FavoriteSongSettings, FavoriteSongSettingsOut, canonical_song_link
 
+class SongPreviewRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=1024)
+
+@router.post("/me/favorite-song/preview")
+async def preview_favorite_song(payload: SongPreviewRequest, current: Comrade = Depends(get_current_comrade)):
+    from app.services.song_preview import resolve_song
+    return await resolve_song(payload.url)
+
 @router.get("/me/favorite-song", response_model=FavoriteSongSettingsOut)
 async def get_favorite_song(current: Comrade = Depends(get_current_comrade)):
     return FavoriteSongSettingsOut(song=current.favorite_song, visible=current.show_favorite_song)

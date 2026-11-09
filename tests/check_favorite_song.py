@@ -16,7 +16,7 @@ class SongChecks(RelationshipChecks):
   result=await self.put_song()
   self.assertEqual(result.status_code,200,result.text)
   song=result.json()['favorite_song']
-  self.assertEqual(song,dict(title='My song',artist='My artist',url='https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC',provider='spotify'))
+  self.assertEqual(song,dict(title='My song',artist='My artist',url='https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC',provider='spotify',artwork_url=None))
   public=await self.client.get(f'/auth/profile/{self.ids[0]}',headers=self.headers(1))
   self.assertEqual(public.json()['favorite_song'],song)
 
