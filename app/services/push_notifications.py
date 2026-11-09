@@ -124,3 +124,22 @@ async def send_push(chat_id: uuid.UUID, payload: dict):
         logger.exception("Push notification delivery failed")
 
 
+
+
+
+async def send_call_push(recipient, call_id, caller_name, event_type="call_invite"):
+    if _app is None:
+        return False
+    async with async_session_maker() as db:
+        tokens = (await db.scalars(select(PushDevice.token).where(PushDevice.comrade_id == recipient))).all()
+    async with _sender_limit:
+        for token in tokens:
+            message = messaging.Message(token=token, data={
+                "event_type": event_type, "recipient_id": str(recipient),
+                "call_id": str(call_id), "caller_name": caller_name[:100]},
+                android=messaging.AndroidConfig(priority="high", ttl=timedelta(seconds=55)))
+            try:
+                await asyncio.to_thread(messaging.send, message, app=_app)
+            except Exception:
+                logger.exception("Incoming call push failed")
+    return True

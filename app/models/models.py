@@ -227,3 +227,61 @@ class DispatchChoice(Base):
     choices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
 
+
+
+
+class AutoDeletePolicy(Base):
+    __tablename__ = "auto_delete_policies"
+    soviet_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("soviets.id", ondelete="CASCADE"), primary_key=True)
+    comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    seconds: Mapped[int] = mapped_column(nullable=False, default=0)
+    for_everyone: Mapped[bool] = mapped_column(nullable=False, default=False)
+
+
+class AutoDeleteDeadline(Base):
+    __tablename__ = "auto_delete_deadlines"
+    dispatch_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dispatches.id", ondelete="CASCADE"), primary_key=True)
+    comrade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id", ondelete="CASCADE"), primary_key=True)
+    soviet_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("soviets.id", ondelete="CASCADE"), index=True)
+    for_everyone: Mapped[bool] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    completed: Mapped[bool] = mapped_column(default=False, index=True)
+
+
+# Runs in the message transaction, covering HTTP, WebSocket, attachments and forwards.
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session
+
+@event.listens_for(Session, "after_flush")
+def schedule_auto_delete(session, flush_context):
+    for message in list(session.new):
+        if not isinstance(message, Dispatch):
+            continue
+        policies = session.execute(select(AutoDeletePolicy).join(SovietMember,
+            (SovietMember.soviet_id == AutoDeletePolicy.soviet_id) &
+            (SovietMember.comrade_id == AutoDeletePolicy.comrade_id)).where(
+            AutoDeletePolicy.soviet_id == message.soviet_id, AutoDeletePolicy.seconds > 0)).scalars().all()
+        for policy in policies:
+            if policy.for_everyone and policy.comrade_id != message.sender_id:
+                continue
+            session.add(AutoDeleteDeadline(dispatch_id=message.id, comrade_id=policy.comrade_id,
+                soviet_id=message.soviet_id, for_everyone=policy.for_everyone,
+                expires_at=message.created_at + timedelta(seconds=policy.seconds)))
+
+
+class VoiceCall(Base):
+    __tablename__ = "voice_calls"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    soviet_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("soviets.id", ondelete="CASCADE"), index=True)
+    caller_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id"), index=True)
+    callee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("comrades.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="ringing", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    caller_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    callee_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    offer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caller_ice: Mapped[list] = mapped_column(JSON, default=list)
+    callee_ice: Mapped[list] = mapped_column(JSON, default=list)

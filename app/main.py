@@ -70,10 +70,14 @@ async def lifespan(app: FastAPI):
     ws.socket_manager = manager
 
     listener_task = asyncio.create_task(manager.start_listener())
+    from app.services.auto_delete import cleanup_loop as auto_delete_loop
+    auto_delete_task = asyncio.create_task(auto_delete_loop())
 
     yield
 
     # 3. Limpieza al apagar el servidor
+    auto_delete_task.cancel()
+    await asyncio.gather(auto_delete_task, return_exceptions=True)
     media_cleanup.cancel()
     await asyncio.gather(media_cleanup, return_exceptions=True)
     listener_task.cancel()
@@ -113,5 +117,6 @@ async def health_check():
         "apparatus": "Comité Central en línea",
         "quota_fulfilled": True
     }
+
 
 

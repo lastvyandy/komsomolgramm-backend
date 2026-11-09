@@ -1,0 +1,30 @@
+services:
+  komsomol_api:
+    environment:
+      CALL_TURN_HOST: ${CALL_TURN_HOST:?Set CALL_TURN_HOST in .env}
+      CALL_TURN_SECRET: ${CALL_TURN_SECRET:?Set CALL_TURN_SECRET in .env}
+  komsomol_turn:
+    image: coturn/coturn:4.6.3
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${CALL_TURN_SECRET:?Set CALL_TURN_SECRET in .env}
+      - --realm=${CALL_TURN_HOST:?Set CALL_TURN_HOST in .env}
+      - --external-ip=${CALL_TURN_EXTERNAL_IP:?Set public VPS IPv4 in .env}
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --no-multicast-peers
+      - --no-loopback-peers
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --user-quota=4
+      - --total-quota=64
